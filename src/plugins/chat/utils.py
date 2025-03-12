@@ -86,37 +86,46 @@ def get_closest_chat_from_db(length: int, timestamp: str):
         list: 消息记录列表，每个记录包含时间和文本信息
     """
     chat_records = []
-    closest_record = db.messages.find_one({"time": {"$lte": timestamp}}, sort=[("time", -1)])
-
+    closest_record = db.db.messages.find_one({"time": {"$lte": timestamp}}, sort=[('time', -1)])
+    
     if closest_record:
-        closest_time = closest_record["time"]
-        chat_id = closest_record["chat_id"]  # 获取chat_id
-        # 获取该时间戳之后的length条消息，保持相同的chat_id
-        chat_records = list(
-            db.messages.find(
-                {
-                    "time": {"$gt": closest_time},
-                    "chat_id": chat_id,  # 添加chat_id过滤
-                }
-            )
-            .sort("time", 1)
-            .limit(length)
-        )
-
+        closest_time = closest_record['time']
+        
+        # 处理旧格式的数据，兼容 group_id 和 chat_id
+        if 'chat_id' in closest_record:
+            chat_id = closest_record['chat_id']
+            filter_field = "chat_id"
+        elif 'group_id' in closest_record:
+            chat_id = closest_record['group_id']
+            filter_field = "group_id"
+        else:
+            # 如果两个字段都不存在，则返回空列表
+            return []
+            
+        # 获取该时间戳之后的length条消息，保持相同的会话ID
+        chat_records = list(db.db.messages.find(
+            {
+                "time": {"$gt": closest_time},
+                filter_field: chat_id  # 使用正确的字段名
+            }
+        ).sort('time', 1).limit(length))
+        
         # 转换记录格式
         formatted_records = []
         for record in chat_records:
-            # 兼容行为，前向兼容老数据
-            formatted_records.append(
-                {
-                    "_id": record["_id"],
-                    "time": record["time"],
-                    "chat_id": record["chat_id"],
-                    "detailed_plain_text": record.get("detailed_plain_text", ""),  # 添加文本内容
-                    "memorized_times": record.get("memorized_times", 0),  # 添加记忆次数
-                }
-            )
-
+            formatted_record = {
+                'time': record["time"],
+                'detailed_plain_text': record.get("detailed_plain_text", "")
+            }
+            
+            # 保留一致的 ID 字段
+            if filter_field == "chat_id":
+                formatted_record['chat_id'] = record["chat_id"]
+            else:
+                formatted_record['group_id'] = record["group_id"]
+                
+            formatted_records.append(formatted_record)
+            
         return formatted_records
 
     return []
