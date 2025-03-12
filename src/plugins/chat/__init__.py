@@ -129,9 +129,9 @@ async def forget_memory_task():
 @scheduler.scheduled_job("interval", seconds=global_config.build_memory_interval + 10, id="merge_memory")
 async def merge_memory_task():
     """每30秒执行一次记忆构建"""
-    # print("\033[1;32m[记忆整合]\033[0m 开始整合")
-    # await hippocampus.operation_merge_memory(percentage=0.1)
-    # print("\033[1;32m[记忆整合]\033[0m 记忆整合完成")
+    print("\033[1;32m[记忆整合]\033[0m 开始整合")
+    await hippocampus.operation_merge_memory(percentage=0.1)
+    print("\033[1;32m[记忆整合]\033[0m 记忆整合完成")
 
 
 @scheduler.scheduled_job("interval", seconds=30, id="print_mood")

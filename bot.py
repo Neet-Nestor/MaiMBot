@@ -101,6 +101,30 @@ def load_env():
         RuntimeError(f"ENVIRONMENT 配置错误，请检查 .env 文件中的 ENVIRONMENT 变量及对应 .env.{env} 是否存在")
 
 
+def load_logger():
+    logger.remove()  # 移除默认配置
+    if os.getenv("ENVIRONMENT") == "dev":
+        logger.add(
+            sys.stderr,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> <fg #777777>|</> <level>{level: <7}</level> <fg "
+                   "#777777>|</> <cyan>{name:.<8}</cyan>:<cyan>{function:.<8}</cyan>:<cyan>{line: >4}</cyan> <fg "
+                   "#777777>-</> <level>{message}</level>",
+            colorize=True,
+            level=os.getenv("LOG_LEVEL", "DEBUG"),  # 根据环境设置日志级别，默认为DEBUG
+        )
+    else:
+        logger.add(
+            sys.stderr,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> <fg #777777>|</> <level>{level: <7}</level> <fg "
+                "#777777>|</> <cyan>{name:.<8}</cyan>:<cyan>{function:.<8}</cyan>:<cyan>{line: >4}</cyan> <fg "
+                "#777777>-</> <level>{message}</level>",
+            colorize=True,
+            level=os.getenv("LOG_LEVEL", "DEBUG"),  # 根据环境设置日志级别，默认为INFO
+            filter=lambda record: "nonebot" not in record["name"]
+        )
+
+
+
 def scan_provider(env_config: dict):
     provider = {}
 
