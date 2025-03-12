@@ -128,7 +128,7 @@ def load_logger():
                 "#777777>|</> <cyan>{name:.<8}</cyan>:<cyan>{function:.<8}</cyan>:<cyan>{line: >4}</cyan> <fg "
                 "#777777>-</> <level>{message}</level>",
             colorize=True,
-            level=os.getenv("LOG_LEVEL", "INFO"),  # 根据环境设置日志级别，默认为INFO
+            level=os.getenv("LOG_LEVEL", "DEBUG"),  # 根据环境设置日志级别，默认为INFO
             filter=lambda record: "nonebot" not in record["name"]
         )
 
