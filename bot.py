@@ -268,7 +268,8 @@ def check_eula():
 def raw_main():
     # 利用 TZ 环境变量设定程序工作的时区
     # 仅保证行为一致，不依赖 localtime()，实际对生产环境几乎没有作用
-    if platform.system().lower() != "windows":
+    if platform.system().lower() != 'windows':
+        logger.info(f"设置时区为{os.getenv('TZ')}")
         time.tzset()
 
     check_eula()
