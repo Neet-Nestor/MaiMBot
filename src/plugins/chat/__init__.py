@@ -130,7 +130,7 @@ async def forget_memory_task():
 async def merge_memory_task():
     """每30秒执行一次记忆构建"""
     print("\033[1;32m[记忆整合]\033[0m 开始整合")
-    await hippocampus.operation_merge_memory(percentage=0.1)
+    await hippocampus.operation_merge_memory(percentage=global_config.memory_merge_percentage)
     print("\033[1;32m[记忆整合]\033[0m 记忆整合完成")
 
 

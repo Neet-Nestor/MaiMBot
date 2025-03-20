@@ -39,7 +39,7 @@ class BotConfig:
 
     ban_user_id = set()
 
-    EMOJI_CHECK_INTERVAL: int = 120  # 表情包检查间隔（分钟）
+    EMOJI_CHECK_INTERVAL: int = 240  # 表情包检查间隔（分钟）
     EMOJI_REGISTER_INTERVAL: int = 10  # 表情包注册间隔（分钟）
     EMOJI_SAVE: bool = True  # 偷表情包
     EMOJI_CHECK: bool = False  # 是否开启过滤
@@ -100,9 +100,9 @@ class BotConfig:
     PERSONALITY_2: float = 0.3  # 第二种人格概率
     PERSONALITY_3: float = 0.1  # 第三种人格概率
 
-    build_memory_interval: int = 600  # 记忆构建间隔（秒）
+    build_memory_interval: int = 7200  # 记忆构建间隔（秒）
 
-    forget_memory_interval: int = 600  # 记忆遗忘间隔（秒）
+    forget_memory_interval: int = 7200  # 记忆遗忘间隔（秒）
     memory_forget_time: int = 24  # 记忆遗忘时间（小时）
     memory_forget_percentage: float = 0.01  # 记忆遗忘比例
     memory_compress_rate: float = 0.1  # 记忆压缩率
