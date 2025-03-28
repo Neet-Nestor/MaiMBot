@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"7b1e35149f9c4465a22b3de39a16e57f","collectionName":"reasoning_logs","type":"collection"}
