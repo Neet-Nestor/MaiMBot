@@ -108,6 +108,8 @@ class ResponseGenerator:
         # 生成回复
         try:
             content, reasoning_content = await model.generate_response(prompt)
+            logger.info(f"推理过程: {reasoning_content}")
+            logger.info(f"生成回复: {content}")
         except Exception:
             logger.exception("生成回复时出错")
             return None

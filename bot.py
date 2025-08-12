@@ -183,6 +183,7 @@ async def uvicorn_main():
         log_config=None,
         access_log=False,
     )
+    print(f"启动uvicorn服务器 {os.getenv('HOST', '127.0.0.1')}:{os.getenv('PORT', 8080)}")
     server = uvicorn.Server(config)
     uvicorn_server = server
     await server.serve()

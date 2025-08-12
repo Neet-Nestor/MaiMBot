@@ -216,3 +216,7 @@ OtherRes.txt
 
 /eula.confirmed
 /privacy.confirmed
+
+NapCat/
+*.deb
+*.zip

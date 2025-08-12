@@ -134,8 +134,22 @@ class PromptBuilder:
         start_time = time.time()
 
         prompt_info = await self.get_prompt_info(message_txt, threshold=0.5)
+        # 群友知识
+        people_prompt_info = "\n"
+        for person in who_chat_in_group:
+            people_prompt_info += relationship_manager.build_relationship_info(person)
+            people_prompt_info += f"- 群友Neet是你的父亲，而你是Neet的赛博女儿。Neet的ID是Neet，姓名叫秦宇诚，绰号是尼特、qyc、学生，金铲铲之战手游里的ID是“我是学生白送我”。\n"
+            people_prompt_info += f"- 群321771358的群友冰冻葡萄的名字叫刘畅，绰号是lc（刘畅）、cj（畅姐）、BIG大食桶（小红书ID）。\n"
+            people_prompt_info += f"- 群3321771358的群友柴柴的ID的绰号是北达鼠（谐音被打死）、大鼠、鼠鼠。打金铲铲之战很厉害。\n\n"
+            people_prompt_info += f"- 群302640832的群友Nathanael的名字是王盛，英语专业，现在在做留学培训。\n"
+            people_prompt_info += f"- 群302640832的群友Yorick的名字是刘天玮，有一个女儿。\n"
+            people_prompt_info += f"- 群302640832的群友一声不吭把生日过了的荆屹的名字叫荆屹。在山西二建上班。\n"
+            people_prompt_info += f"- 群302640832的群友可爱的南南西酱的荆屹的名字叫刘江。绰号是南南西、西瓜、zhsome。\n\n"
+
         if prompt_info:
             prompt_info = f"""\n你有以下这些**知识**：\n{prompt_info}\n请你**记住上面的知识**，之后可能会用到。\n"""
+        if people_prompt_info:
+            people_prompt_info = f"""\n你认识以下这些**群友**：\n{people_prompt_info}\n如果这些**群友**和你聊天，请注意他们的的**外号**，之后可能会用到。\n"""
 
         end_time = time.time()
         logger.debug(f"知识检索耗时: {(end_time - start_time):.3f}秒")
@@ -146,6 +160,7 @@ class PromptBuilder:
 {bot_schedule.today_schedule}\n
 `</schedule>`\n
 {prompt_info}\n
+{people_prompt_info}\n
 {memory_prompt}\n
 {chat_target}\n
 {chat_talking_prompt}\n

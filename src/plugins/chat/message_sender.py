@@ -95,7 +95,7 @@ class MessageContainer:
         self.max_size = max_size
         self.messages = []
         self.last_send_time = 0
-        self.thinking_timeout = 20  # 思考超时时间（秒）
+        self.thinking_timeout = 450  # 思考超时时间（秒）
 
     def get_timeout_messages(self) -> List[MessageSending]:
         """获取所有超时的Message_Sending对象（思考时间超过30秒），按thinking_start_time排序"""
