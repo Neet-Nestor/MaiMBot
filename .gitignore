@@ -1,6 +1,7 @@
 data/
 data1/
 mongodb/
+mongodb_backup/
 NapCat.Framework.Windows.Once/
 log/
 logs/
@@ -220,3 +221,5 @@ OtherRes.txt
 NapCat/
 *.deb
 *.zip
+
+backups/
