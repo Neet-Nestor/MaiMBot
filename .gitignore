@@ -5,31 +5,64 @@ mongodb_backup/
 NapCat.Framework.Windows.Once/
 log/
 logs/
+out/
+tool_call_benchmark.py
+run_maibot_core.bat
+run_voice.bat
+run_napcat_adapter.bat
+run_ad.bat
+s4u.s4u
+llm_tool_benchmark_results.json
+MaiBot-Napcat-Adapter-main
+MaiBot-Napcat-Adapter
 /test
+/log_debug
 /src/test
+nonebot-maibot-adapter/
+MaiMBot-LPMM
+*.zip
+run_bot.bat
+run_na.bat
+run.bat
+log_debug/
+run_amds.bat
+run_none.bat
+run.py
 message_queue_content.txt
 message_queue_content.bat
 message_queue_window.bat
 message_queue_window.txt
 queue_update.txt
 memory_graph.gml
+/src/tools/tool_can_use/auto_create_tool.py
+/src/tools/tool_can_use/execute_python_code_tool.py
 .env
 .env.*
+.cursor
 config/bot_config_dev.toml
 config/bot_config.toml
 config/bot_config.toml.bak
-src/plugins/remote/client_uuid.json
+config/lpmm_config.toml
+config/lpmm_config.toml.bak
+template/compare/bot_config_template.toml
+template/compare/model_config_template.toml
+（测试版）麦麦生成人格.bat
+（临时版）麦麦开始学习.bat
+src/plugins/utils/statistic.py
+CLAUDE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-llm_statistics.txt
+maibot_statistics.html
 mongodb
 napcat
 run_dev.bat
 elua.confirmed
 # C extensions
 *.so
+/results
 
 # Distribution / packaging
 .Python
@@ -223,3 +256,84 @@ NapCat/
 *.zip
 
 backups/
+logs
+
+.ruff_cache
+
+.vscode
+
+/config/*
+config/old/bot_config_20250405_212257.toml
+temp/
+
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Dump file
+*.stackdump
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+src/chat/focus_chat/working_memory/test/test1.txt
+src/chat/focus_chat/working_memory/test/test4.txt
+run_maiserver.bat
+src/plugins/test_plugin_pic/actions/pic_action_config.toml
+run_pet.bat
+
+/plugins/*
+!/plugins
+!/plugins/hello_world_plugin
+!/plugins/emoji_manage_plugin
+!/plugins/take_picture_plugin
+!/plugins/deep_think
+!/plugins/ChatFrequency/
+!/plugins/__init__.py
+
+config.toml
+
+interested_rates.txt
+MaiBot.code-workspace
+*.lock
