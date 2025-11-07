@@ -48,7 +48,8 @@ services:
       - NAPCAT_GID=1000
       - TZ=Asia/Shanghai
     ports:
-      - "6099:6099"
+      - "6099:6099"  # WebUI端口
+      - "3001:3001"  # WebSocket服务器端口
     volumes:
       - ./docker-config/napcat:/app/napcat/config # 持久化napcat配置文件
       - ./data/qq:/app/.config/QQ # 持久化QQ本体

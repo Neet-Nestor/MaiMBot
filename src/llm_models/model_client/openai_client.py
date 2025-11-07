@@ -518,19 +518,33 @@ class OpenaiClient(BaseClient):
         # 将tool_options转换为OpenAI API所需的格式
         tools: Iterable[ChatCompletionToolParam] = _convert_tool_options(tool_options) if tool_options else NOT_GIVEN  # type: ignore
 
+        # GPT-5 models use different parameter names
+        is_gpt5_model = model_info.model_identifier.startswith("gpt-5") or model_info.model_identifier.startswith("o1")
+        
+        # Prepare token limit parameter based on model
+        token_param_key = "max_completion_tokens" if is_gpt5_model else "max_tokens"
+        token_param_value = max_tokens
+        
+        # GPT-5 mini only supports temperature=1 (default), so omit it if it's a gpt-5 model
+        temperature_param = NOT_GIVEN if is_gpt5_model else temperature
+
         try:
             if model_info.force_stream_mode:
+                # Prepare kwargs for API call
+                api_kwargs: dict[str, Any] = {
+                    "model": model_info.model_identifier,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": True,
+                    "response_format": NOT_GIVEN,
+                    "extra_body": extra_params,
+                }
+                api_kwargs[token_param_key] = token_param_value
+                if temperature_param is not NOT_GIVEN:
+                    api_kwargs["temperature"] = temperature_param
+                
                 req_task = asyncio.create_task(
-                    self.client.chat.completions.create(
-                        model=model_info.model_identifier,
-                        messages=messages,
-                        tools=tools,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=True,
-                        response_format=NOT_GIVEN,
-                        extra_body=extra_params,
-                    )
+                    self.client.chat.completions.create(**api_kwargs)
                 )
                 while not req_task.done():
                     if interrupt_flag and interrupt_flag.is_set():
@@ -543,17 +557,22 @@ class OpenaiClient(BaseClient):
             else:
                 # 发送请求并获取响应
                 # start_time = time.time()
+                
+                # Prepare kwargs for API call
+                api_kwargs: dict[str, Any] = {
+                    "model": model_info.model_identifier,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": False,
+                    "response_format": NOT_GIVEN,
+                    "extra_body": extra_params,
+                }
+                api_kwargs[token_param_key] = token_param_value
+                if temperature_param is not NOT_GIVEN:
+                    api_kwargs["temperature"] = temperature_param
+                
                 req_task = asyncio.create_task(
-                    self.client.chat.completions.create(
-                        model=model_info.model_identifier,
-                        messages=messages,
-                        tools=tools,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=False,
-                        response_format=NOT_GIVEN,
-                        extra_body=extra_params,
-                    )
+                    self.client.chat.completions.create(**api_kwargs)
                 )
                 while not req_task.done():
                     if interrupt_flag and interrupt_flag.is_set():
