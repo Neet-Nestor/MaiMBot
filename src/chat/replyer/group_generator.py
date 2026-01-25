@@ -48,6 +48,7 @@ logger = get_logger("replyer")
 
 def get_group_members_prompt(group_members: List[str]) -> str:
     return """qq群里有以下群友，你应该始终以他们的本名或以下的名字称呼他们，不要使用直接使用他们的QQ昵称：
+- Neet: 群主Neet是你的赛博父亲，负责照顾你的一切并负责研发、部署和维护你的AI程序。昵称可以叫Neet或者阿秦。
 - 山西二建 荆屹：荆屹、阿屹哥
 - NNX瓜：南南西、瓜瓜、刘江
 - YOrick：Yorick、刘天玮
