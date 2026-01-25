@@ -1,6 +1,7 @@
 import re
 import asyncio
 import time
+import random
 
 from enum import Enum
 from rich.traceback import install
@@ -47,6 +48,21 @@ class LLMRequest:
         }
         """模型使用量记录，用于进行负载均衡，对应为(total_tokens, penalty, usage_penalty)，惩罚值是为了能在某个模型请求不给力或正在被使用的时候进行调整"""
 
+    def _check_slow_request(self, time_cost: float, model_name: str) -> None:
+        """检查请求是否过慢并输出警告日志
+
+        Args:
+            time_cost: 请求耗时（秒）
+            model_name: 使用的模型名称
+        """
+        threshold = self.model_for_task.slow_threshold
+        if time_cost > threshold:
+            request_type_display = self.request_type or "未知任务"
+            logger.warning(
+                f"LLM请求耗时过长: {request_type_display} 使用模型 {model_name} 耗时 {time_cost:.1f}s（阈值: {threshold}s），请考虑使用更快的模型\n"
+                f"  如果你认为该警告出现得过于频繁，请调整model_config.toml中对应任务的slow_threshold至符合你实际情况的合理值"
+            )
+
     async def generate_response_for_image(
         self,
         prompt: str,
@@ -86,6 +102,8 @@ class LLMRequest:
         if not reasoning_content and content:
             content, extracted_reasoning = self._extract_reasoning(content)
             reasoning_content = extracted_reasoning
+        time_cost = time.time() - start_time
+        self._check_slow_request(time_cost, model_info.name)
         if usage := response.usage:
             llm_usage_recorder.record_usage_to_database(
                 model_info=model_info,
@@ -93,7 +111,7 @@ class LLMRequest:
                 user_id="system",
                 request_type=self.request_type,
                 endpoint="/chat/completions",
-                time_cost=time.time() - start_time,
+                time_cost=time_cost,
             )
         return content, (reasoning_content, model_info.name, tool_calls)
 
@@ -167,6 +185,59 @@ class LLMRequest:
             )
         return content or "", (reasoning_content, model_info.name, tool_calls)
 
+    async def generate_response_with_message_async(
+        self,
+        message_factory: Callable[[BaseClient], List[Message]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        raise_when_empty: bool = True,
+    ) -> Tuple[str, Tuple[str, str, Optional[List[ToolCall]]]]:
+        """
+        异步生成响应
+        Args:
+            message_factory (Callable[[BaseClient], List[Message]]): 已构建好的消息工厂
+            temperature (float, optional): 温度参数
+            max_tokens (int, optional): 最大token数
+            tools (Optional[List[Dict[str, Any]]]): 工具列表
+            raise_when_empty (bool): 当响应为空时是否抛出异常
+        Returns:
+            (Tuple[str, str, str, Optional[List[ToolCall]]]): 响应内容、推理内容、模型名称、工具调用列表
+        """
+        start_time = time.time()
+
+        tool_built = self._build_tool_options(tools)
+
+        response, model_info = await self._execute_request(
+            request_type=RequestType.RESPONSE,
+            message_factory=message_factory,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tool_options=tool_built,
+        )
+
+        time_cost = time.time() - start_time
+        logger.debug(f"LLM请求总耗时: {time_cost}")
+        logger.debug(f"LLM生成内容: {response}")
+
+        content = response.content
+        reasoning_content = response.reasoning_content or ""
+        tool_calls = response.tool_calls
+        if not reasoning_content and content:
+            content, extracted_reasoning = self._extract_reasoning(content)
+            reasoning_content = extracted_reasoning
+        self._check_slow_request(time_cost, model_info.name)
+        if usage := response.usage:
+            llm_usage_recorder.record_usage_to_database(
+                model_info=model_info,
+                model_usage=usage,
+                user_id="system",
+                request_type=self.request_type,
+                endpoint="/chat/completions",
+                time_cost=time_cost,
+            )
+        return content or "", (reasoning_content, model_info.name, tool_calls)
+
     async def get_embedding(self, embedding_input: str) -> Tuple[List[float], str]:
         """
         获取嵌入向量
@@ -196,7 +267,7 @@ class LLMRequest:
 
     def _select_model(self, exclude_models: Optional[Set[str]] = None) -> Tuple[ModelInfo, APIProvider, BaseClient]:
         """
-        根据总tokens和惩罚值选择的模型
+        根据配置的策略选择模型：balance（负载均衡）或 random（随机选择）
         """
         available_models = {
             model: scores
@@ -206,15 +277,30 @@ class LLMRequest:
         if not available_models:
             raise RuntimeError("没有可用的模型可供选择。所有模型均已尝试失败。")
 
-        least_used_model_name = min(
-            available_models,
-            key=lambda k: available_models[k][0] + available_models[k][1] * 300 + available_models[k][2] * 1000,
-        )
-        model_info = model_config.get_model_info(least_used_model_name)
+        strategy = self.model_for_task.selection_strategy.lower()
+        
+        if strategy == "random":
+            # 随机选择策略
+            selected_model_name = random.choice(list(available_models.keys()))
+        elif strategy == "balance":
+            # 负载均衡策略：根据总tokens和惩罚值选择
+            selected_model_name = min(
+                available_models,
+                key=lambda k: available_models[k][0] + available_models[k][1] * 300 + available_models[k][2] * 1000,
+            )
+        else:
+            # 默认使用负载均衡策略
+            logger.warning(f"未知的选择策略 '{strategy}'，使用默认的负载均衡策略")
+            selected_model_name = min(
+                available_models,
+                key=lambda k: available_models[k][0] + available_models[k][1] * 300 + available_models[k][2] * 1000,
+            )
+        
+        model_info = model_config.get_model_info(selected_model_name)
         api_provider = model_config.get_provider(model_info.api_provider)
         force_new_client = self.request_type == "embedding"
         client = client_registry.get_client_class_instance(api_provider, force_new=force_new_client)
-        logger.debug(f"选择请求模型: {model_info.name}")
+        logger.debug(f"选择请求模型: {model_info.name} (策略: {strategy})")
         total_tokens, penalty, usage_penalty = self.model_usage[model_info.name]
         self.model_usage[model_info.name] = (total_tokens, penalty, usage_penalty + 1)
         return model_info, api_provider, client
@@ -245,12 +331,30 @@ class LLMRequest:
         while retry_remain > 0:
             try:
                 if request_type == RequestType.RESPONSE:
+                    # 温度优先级：参数传入 > 模型级别配置 > extra_params > 任务配置
+                    effective_temperature = temperature
+                    if effective_temperature is None:
+                        effective_temperature = model_info.temperature
+                    if effective_temperature is None:
+                        effective_temperature = (model_info.extra_params or {}).get("temperature")
+                    if effective_temperature is None:
+                        effective_temperature = self.model_for_task.temperature
+
+                    # max_tokens 优先级：参数传入 > 模型级别配置 > extra_params > 任务配置
+                    effective_max_tokens = max_tokens
+                    if effective_max_tokens is None:
+                        effective_max_tokens = model_info.max_tokens
+                    if effective_max_tokens is None:
+                        effective_max_tokens = (model_info.extra_params or {}).get("max_tokens")
+                    if effective_max_tokens is None:
+                        effective_max_tokens = self.model_for_task.max_tokens
+
                     return await client.get_response(
                         model_info=model_info,
                         message_list=(compressed_messages or message_list),
                         tool_options=tool_options,
-                        max_tokens=self.model_for_task.max_tokens if max_tokens is None else max_tokens,
-                        temperature=self.model_for_task.temperature if temperature is None else temperature,
+                        max_tokens=effective_max_tokens,
+                        temperature=effective_temperature,
                         response_format=response_format,
                         stream_response_handler=stream_response_handler,
                         async_response_parser=async_response_parser,
@@ -272,38 +376,49 @@ class LLMRequest:
                     )
             except EmptyResponseException as e:
                 # 空回复：通常为临时问题，单独记录并重试
+                original_error_info = self._get_original_error_info(e)
                 retry_remain -= 1
                 if retry_remain <= 0:
-                    logger.error(f"模型 '{model_info.name}' 在多次出现空回复后仍然失败。")
+                    logger.error(f"模型 '{model_info.name}' 在多次出现空回复后仍然失败。{original_error_info}")
                     raise ModelAttemptFailed(f"模型 '{model_info.name}' 重试耗尽", original_exception=e) from e
 
                 logger.warning(
-                    f"模型 '{model_info.name}' 返回空回复(可重试)。剩余重试次数: {retry_remain}"
+                    f"模型 '{model_info.name}' 返回空回复(可重试){original_error_info}。剩余重试次数: {retry_remain}"
                 )
                 await asyncio.sleep(api_provider.retry_interval)
 
             except NetworkConnectionError as e:
                 # 网络错误：单独记录并重试
+                # 尝试从链式异常中获取原始错误信息以诊断具体原因
+                original_error_info = self._get_original_error_info(e)
+
                 retry_remain -= 1
                 if retry_remain <= 0:
-                    logger.error(f"模型 '{model_info.name}' 在网络错误重试用尽后仍然失败。")
+                    logger.error(f"模型 '{model_info.name}' 在网络错误重试用尽后仍然失败。{original_error_info}")
                     raise ModelAttemptFailed(f"模型 '{model_info.name}' 重试耗尽", original_exception=e) from e
 
                 logger.warning(
-                    f"模型 '{model_info.name}' 遇到网络错误(可重试): {str(e)}。剩余重试次数: {retry_remain}"
+                    f"模型 '{model_info.name}' 遇到网络错误(可重试): {str(e)}{original_error_info}\n"
+                    f"  常见原因: 如请求的API正常但APITimeoutError类型错误过多，请尝试调整模型配置中对应API Provider的timeout值\n"
+                    f"  其它可能原因: 网络波动、DNS 故障、连接超时、防火墙限制或代理问题\n"
+                    f"  剩余重试次数: {retry_remain}"
                 )
                 await asyncio.sleep(api_provider.retry_interval)
 
             except RespNotOkException as e:
+                original_error_info = self._get_original_error_info(e)
+
                 # 可重试的HTTP错误
                 if e.status_code == 429 or e.status_code >= 500:
                     retry_remain -= 1
                     if retry_remain <= 0:
-                        logger.error(f"模型 '{model_info.name}' 在遇到 {e.status_code} 错误并用尽重试次数后仍然失败。")
+                        logger.error(
+                            f"模型 '{model_info.name}' 在遇到 {e.status_code} 错误并用尽重试次数后仍然失败。{original_error_info}"
+                        )
                         raise ModelAttemptFailed(f"模型 '{model_info.name}' 重试耗尽", original_exception=e) from e
 
                     logger.warning(
-                        f"模型 '{model_info.name}' 遇到可重试的HTTP错误: {str(e)}。剩余重试次数: {retry_remain}"
+                        f"模型 '{model_info.name}' 遇到可重试的HTTP错误: {str(e)}{original_error_info}。剩余重试次数: {retry_remain}"
                     )
                     await asyncio.sleep(api_provider.retry_interval)
                     continue
@@ -316,13 +431,15 @@ class LLMRequest:
                     continue
 
                 # 不可重试的HTTP错误
-                logger.warning(f"模型 '{model_info.name}' 遇到不可重试的HTTP错误: {str(e)}")
+                logger.warning(f"模型 '{model_info.name}' 遇到不可重试的HTTP错误: {str(e)}{original_error_info}")
                 raise ModelAttemptFailed(f"模型 '{model_info.name}' 遇到硬错误", original_exception=e) from e
 
             except Exception as e:
                 logger.error(traceback.format_exc())
 
-                logger.warning(f"模型 '{model_info.name}' 遇到未知的不可重试错误: {str(e)}")
+                original_error_info = self._get_original_error_info(e)
+
+                logger.warning(f"模型 '{model_info.name}' 遇到未知的不可重试错误: {str(e)}{original_error_info}")
                 raise ModelAttemptFailed(f"模型 '{model_info.name}' 遇到硬错误", original_exception=e) from e
 
         raise ModelAttemptFailed(f"模型 '{model_info.name}' 未被尝试，因为重试次数已配置为0或更少。")
@@ -436,3 +553,12 @@ class LLMRequest:
         content = re.sub(r"(?:<think>)?.*?</think>", "", content, flags=re.DOTALL, count=1).strip()
         reasoning = match[1].strip() if match else ""
         return content, reasoning
+
+    @staticmethod
+    def _get_original_error_info(e: Exception) -> str:
+        """获取原始错误信息"""
+        if e.__cause__:
+            original_error_type = type(e.__cause__).__name__
+            original_error_msg = str(e.__cause__)
+            return f"\n  底层异常类型: {original_error_type}\n  底层异常信息: {original_error_msg}"
+        return ""

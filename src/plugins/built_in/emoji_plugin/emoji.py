@@ -47,7 +47,7 @@ class EmojiAction(BaseAction):
         try:
             # 1. 获取发送表情的原因
             # reason = self.action_data.get("reason", "表达当前情绪")
-            reason = self.reasoning
+            reason = self.action_reasoning
 
             # 2. 随机获取20个表情包
             sampled_emojis = await emoji_api.get_random(30)
@@ -102,13 +102,13 @@ class EmojiAction(BaseAction):
 
                 # 5. 调用LLM
                 models = llm_api.get_available_models()
-                chat_model_config = models.get("replyer")  # 使用字典访问方式
+                chat_model_config = models.get("utils")  # 使用字典访问方式
                 if not chat_model_config:
-                    logger.error(f"{self.log_prefix} 未找到'replyer'模型配置，无法调用LLM")
-                    return False, "未找到'replyer'模型配置"
+                    logger.error(f"{self.log_prefix} 未找到'utils'模型配置，无法调用LLM")
+                    return False, "未找到'utils'模型配置"
 
                 success, chosen_emotion, _, _ = await llm_api.generate_with_model(
-                    prompt, model_config=chat_model_config, request_type="emoji"
+                    prompt, model_config=chat_model_config, request_type="emoji.select"
                 )
 
                 if not success:

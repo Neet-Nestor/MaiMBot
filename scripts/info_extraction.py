@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import signal
@@ -5,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Event
 import sys
 import datetime
+from typing import Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # 添加项目根目录到 sys.path
@@ -115,22 +117,34 @@ def signal_handler(_signum, _frame):
     sys.exit(0)
 
 
-def main():  # sourcery skip: comprehension-to-generator, extract-method
+def _run(non_interactive: bool = False) -> None:  # sourcery skip: comprehension-to-generator, extract-method
     # 设置信号处理器
     signal.signal(signal.SIGINT, signal_handler)
     ensure_dirs()  # 确保目录存在
     # 新增用户确认提示
-    print("=== 重要操作确认，请认真阅读以下内容哦 ===")
-    print("实体提取操作将会花费较多api余额和时间，建议在空闲时段执行。")
-    print("举例：600万字全剧情，提取选用deepseek v3 0324，消耗约40元，约3小时。")
-    print("建议使用硅基流动的非Pro模型")
-    print("或者使用可以用赠金抵扣的Pro模型")
-    print("请确保账户余额充足，并且在执行前确认无误。")
-    confirm = input("确认继续执行？(y/n): ").strip().lower()
-    if confirm != "y":
-        logger.info("用户取消操作")
-        print("操作已取消")
-        sys.exit(1)
+    if non_interactive:
+        logger.warning(
+            "当前处于非交互模式，将跳过费用与时长确认提示，直接开始进行实体提取操作。"
+        )
+    else:
+        print("=== 重要操作确认，请认真阅读以下内容哦 ===")
+        print("实体提取操作将会花费较多api余额和时间，建议在空闲时段执行。")
+        print("举例：600万字全剧情，提取选用deepseek v3 0324，消耗约40元，约3小时。")
+        print("建议使用硅基流动的非Pro模型")
+        print("或者使用可以用赠金抵扣的Pro模型")
+        print("请确保账户余额充足，并且在执行前确认无误。")
+        confirm = input("确认继续执行？(y/n): ").strip().lower()
+        if confirm != "y":
+            logger.info("用户取消操作")
+            print("操作已取消")
+            sys.exit(1)
+
+    # 友好提示：说明“网络错误(可重试)”日志属于正常自动重试行为，避免用户误以为任务失败
+    print(
+        "\n提示：在提取过程中，如果看到模型出现“网络错误(可重试)”等日志，"
+        "表示系统正在自动重试请求，一般不会影响整体导入结果，请耐心等待即可。\n"
+    )
+
     print("\n" + "=" * 40 + "\n")
     ensure_dirs()  # 确保目录存在
     logger.info("--------进行信息提取--------\n")
@@ -213,6 +227,23 @@ def main():  # sourcery skip: comprehension-to-generator, extract-method
 
     logger.info("--------信息提取完成--------")
     logger.info(f"提取失败的文段SHA256：{failed_sha256}")
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "LPMM 信息提取脚本：从 data/lpmm_raw_data/*.txt 中读取原始段落，"
+            "调用 LLM 提取实体和三元组，并生成 OpenIE JSON 批次文件。"
+        )
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="非交互模式：跳过费用确认提示，直接开始执行；适用于 CI / 定时任务等场景。",
+    )
+    args = parser.parse_args(argv)
+
+    _run(non_interactive=args.non_interactive)
 
 
 if __name__ == "__main__":

@@ -12,11 +12,11 @@ logger = get_logger("tool_api")
 
 def get_tool_instance(tool_name: str, chat_stream: Optional["ChatStream"] = None) -> Optional[BaseTool]:
     """获取公开工具实例
-    
+
     Args:
         tool_name: 工具名称
         chat_stream: 聊天流对象，用于传递聊天上下文信息
-        
+
     Returns:
         Optional[BaseTool]: 工具实例，如果未找到则返回None
     """

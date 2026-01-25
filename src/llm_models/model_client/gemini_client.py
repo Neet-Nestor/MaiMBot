@@ -98,7 +98,10 @@ def _convert_messages(
             content: List[Part] = []
             for item in message.content:
                 if isinstance(item, tuple):
-                    image_format = "jpeg" if item[0].lower() == "jpg" else item[0].lower()
+                    image_format = item[0].lower()
+                    # 规范 JPEG MIME 类型后缀，统一使用 image/jpeg
+                    if image_format in ("jpg", "jpeg"):
+                        image_format = "jpeg"
                     content.append(Part.from_bytes(data=base64.b64decode(item[1]), mime_type=f"image/{image_format}"))
                 elif isinstance(item, str):
                     content.append(Part.from_text(text=item))
@@ -143,8 +146,17 @@ def _convert_tool_options(tool_options: list[ToolOption]) -> list[FunctionDeclar
         :param tool_option_param: 工具参数对象
         :return: 转换后的工具参数字典
         """
+        # JSON Schema 类型名称修正：
+        # - 布尔类型使用 "boolean" 而不是 "bool"
+        # - 浮点数使用 "number" 而不是 "float"
+        param_type_value = tool_option_param.param_type.value
+        if param_type_value == "bool":
+            param_type_value = "boolean"
+        elif param_type_value == "float":
+            param_type_value = "number"
+
         return_dict: dict[str, Any] = {
-            "type": tool_option_param.param_type.value,
+            "type": param_type_value,
             "description": tool_option_param.description,
         }
         if tool_option_param.enum_values:
@@ -250,7 +262,7 @@ def _build_stream_api_resp(
             if fr:
                 reason = str(fr)
                 break
-    
+
     if str(reason).endswith("MAX_TOKENS"):
         has_visible_output = bool(resp.content and resp.content.strip())
         if has_visible_output:
@@ -281,8 +293,8 @@ async def _default_stream_response_handler(
     _tool_calls_buffer: list[tuple[str, str, dict]] = []  # 工具调用缓冲区，用于存储接收到的工具调用
     _usage_record = None  # 使用情况记录
     last_resp: GenerateContentResponse | None = None  # 保存最后一个 chunk
-    resp = APIResponse()  
-    
+    resp = APIResponse()
+
     def _insure_buffer_closed():
         if _fc_delta_buffer and not _fc_delta_buffer.closed:
             _fc_delta_buffer.close()
@@ -298,7 +310,7 @@ async def _default_stream_response_handler(
             chunk,
             _fc_delta_buffer,
             _tool_calls_buffer,
-            resp=resp, 
+            resp=resp,
         )
 
         if chunk.usage_metadata:
@@ -314,7 +326,7 @@ async def _default_stream_response_handler(
             _fc_delta_buffer,
             _tool_calls_buffer,
             last_resp=last_resp,
-            resp=resp, 
+            resp=resp,
         ), _usage_record
     except Exception:
         # 确保缓冲区被关闭

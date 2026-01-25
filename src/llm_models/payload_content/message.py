@@ -1,4 +1,7 @@
 from enum import Enum
+from typing import List, Optional
+
+from .tool_option import ToolCall
 
 
 # 设计这系列类的目的是为未来可能的扩展做准备
@@ -20,6 +23,7 @@ class Message:
         role: RoleType,
         content: str | list[tuple[str, str] | str],
         tool_call_id: str | None = None,
+        tool_calls: Optional[List[ToolCall]] = None,
     ):
         """
         初始化消息对象
@@ -28,6 +32,13 @@ class Message:
         self.role: RoleType = role
         self.content: str | list[tuple[str, str] | str] = content
         self.tool_call_id: str | None = tool_call_id
+        self.tool_calls: Optional[List[ToolCall]] = tool_calls
+
+    def __str__(self) -> str:
+        return (
+            f"Role: {self.role}, Content: {self.content}, "
+            f"Tool Call ID: {self.tool_call_id}, Tool Calls: {self.tool_calls}"
+        )
 
 
 class MessageBuilder:
@@ -35,6 +46,7 @@ class MessageBuilder:
         self.__role: RoleType = RoleType.User
         self.__content: list[tuple[str, str] | str] = []
         self.__tool_call_id: str | None = None
+        self.__tool_calls: Optional[List[ToolCall]] = None
 
     def set_role(self, role: RoleType = RoleType.User) -> "MessageBuilder":
         """
@@ -86,12 +98,25 @@ class MessageBuilder:
         self.__tool_call_id = tool_call_id
         return self
 
+    def set_tool_calls(self, tool_calls: List[ToolCall]) -> "MessageBuilder":
+        """
+        设置助手消息的工具调用列表
+        :param tool_calls: 工具调用列表
+        :return: MessageBuilder对象
+        """
+        if self.__role != RoleType.Assistant:
+            raise ValueError("仅当角色为Assistant时才能设置工具调用列表")
+        if not tool_calls:
+            raise ValueError("工具调用列表不能为空")
+        self.__tool_calls = tool_calls
+        return self
+
     def build(self) -> Message:
         """
         构建消息对象
         :return: Message对象
         """
-        if len(self.__content) == 0:
+        if len(self.__content) == 0 and not (self.__role == RoleType.Assistant and self.__tool_calls):
             raise ValueError("内容不能为空")
         if self.__role == RoleType.Tool and self.__tool_call_id is None:
             raise ValueError("Tool角色的工具调用ID不能为空")
@@ -104,4 +129,5 @@ class MessageBuilder:
                 else self.__content
             ),
             tool_call_id=self.__tool_call_id,
+            tool_calls=self.__tool_calls,
         )

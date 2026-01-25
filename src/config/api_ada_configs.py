@@ -60,6 +60,12 @@ class ModelInfo(ConfigBase):
     price_out: float = field(default=0.0)
     """每M token输出价格"""
 
+    temperature: float | None = field(default=None)
+    """模型级别温度（可选），会覆盖任务配置中的温度"""
+
+    max_tokens: int | None = field(default=None)
+    """模型级别最大token数（可选），会覆盖任务配置中的max_tokens"""
+
     force_stream_mode: bool = field(default=False)
     """是否强制使用流式输出模式"""
 
@@ -88,6 +94,12 @@ class TaskConfig(ConfigBase):
     temperature: float = 0.3
     """模型温度"""
 
+    slow_threshold: float = 15.0
+    """慢请求阈值（秒），超过此值会输出警告日志"""
+
+    selection_strategy: str = field(default="balance")
+    """模型选择策略：balance（负载均衡）或 random（随机选择）"""
+
 
 @dataclass
 class ModelTaskConfig(ConfigBase):
@@ -95,9 +107,6 @@ class ModelTaskConfig(ConfigBase):
 
     utils: TaskConfig
     """组件模型配置"""
-
-    utils_small: TaskConfig
-    """组件小模型配置"""
 
     replyer: TaskConfig
     """normal_chat首要回复模型模型配置"""
@@ -122,9 +131,6 @@ class ModelTaskConfig(ConfigBase):
 
     lpmm_rdf_build: TaskConfig
     """LPMM RDF构建模型配置"""
-
-    lpmm_qa: TaskConfig
-    """LPMM问答模型配置"""
 
     def get_task(self, task_name: str) -> TaskConfig:
         """获取指定任务的配置"""

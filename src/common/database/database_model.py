@@ -20,6 +20,8 @@ logger = get_logger("database_model")
 
 # 定义一个基础模型是一个好习惯，所有其他模型都应继承自它。
 # 这允许您在一个地方为所有模型指定数据库。
+
+
 class BaseModel(Model):
     class Meta:
         # 将下面的 'db' 替换为您实际的数据库实例变量名。
@@ -168,6 +170,7 @@ class Messages(BaseModel):
     is_emoji = BooleanField(default=False)
     is_picid = BooleanField(default=False)
     is_command = BooleanField(default=False)
+    intercept_message_level = IntegerField(default=0)
     is_notify = BooleanField(default=False)
 
     selected_expressions = TextField(null=True)
@@ -237,6 +240,20 @@ class ImageDescriptions(BaseModel):
         table_name = "image_descriptions"
 
 
+class EmojiDescriptionCache(BaseModel):
+    """
+    存储表情包的详细描述和情感标签缓存
+    """
+
+    emoji_hash = TextField(unique=True, index=True)
+    description = TextField()  # 详细描述
+    emotion_tags = TextField(null=True)  # 情感标签，逗号分隔
+    timestamp = FloatField()
+
+    class Meta:
+        table_name = "emoji_description_cache"
+
+
 class OnlineTime(BaseModel):
     """
     用于存储在线时长记录的模型。
@@ -265,6 +282,7 @@ class PersonInfo(BaseModel):
     platform = TextField()  # 平台
     user_id = TextField(index=True)  # 用户ID
     nickname = TextField(null=True)  # 用户昵称
+    group_nick_name = TextField(null=True)  # 群昵称列表 (JSON格式，存储 [{"group_id": str, "group_nick_name": str}])
     memory_points = TextField(null=True)  # 个人印象的点
     know_times = FloatField(null=True)  # 认识时间 (时间戳)
     know_since = FloatField(null=True)  # 首次印象总结时间
@@ -303,47 +321,95 @@ class Expression(BaseModel):
 
     situation = TextField()
     style = TextField()
-
-    # new mode fields
-    context = TextField(null=True)
-    up_content = TextField(null=True)
-
+    content_list = TextField(null=True)
+    count = IntegerField(default=1)
     last_active_time = FloatField()
     chat_id = TextField(index=True)
     create_date = FloatField(null=True)  # 创建日期，允许为空以兼容老数据
+    checked = BooleanField(default=False)  # 是否已检查
+    rejected = BooleanField(default=False)  # 是否被拒绝但未更新
+    modified_by = TextField(null=True)  # 最后修改来源：'ai' 或 'user'，为空表示未检查
 
     class Meta:
         table_name = "expression"
 
-class MemoryChest(BaseModel):
+
+class Jargon(BaseModel):
     """
-    用于存储记忆仓库的模型
+    用于存储俚语的模型
     """
 
-    title = TextField()  # 标题
-    content = TextField()  # 内容
-    chat_id = TextField(null=True)  # 聊天ID
-    locked = BooleanField(default=False)  # 是否锁定
+    content = TextField()
+    raw_content = TextField(null=True)
+    meaning = TextField(null=True)
+    chat_id = TextField(index=True)
+    is_global = BooleanField(default=False)
+    count = IntegerField(default=0)
+    is_jargon = BooleanField(null=True)  # None表示未判定，True表示是黑话，False表示不是黑话
+    last_inference_count = IntegerField(null=True)  # 最后一次判定的count值，用于避免重启后重复判定
+    is_complete = BooleanField(default=False)  # 是否已完成所有推断（count>=100后不再推断）
+    inference_with_context = TextField(null=True)  # 基于上下文的推断结果（JSON格式）
+    inference_content_only = TextField(null=True)  # 仅基于词条的推断结果（JSON格式）
 
     class Meta:
-        table_name = "memory_chest"
+        table_name = "jargon"
 
-class MemoryConflict(BaseModel):
+
+class ChatHistory(BaseModel):
     """
-    用于存储记忆整合过程中冲突内容的模型
+    用于存储聊天历史概括的模型
     """
 
-    conflict_content = TextField()  # 冲突内容
-    answer = TextField(null=True)  # 回答内容
-    create_time = FloatField()  # 创建时间
-    update_time = FloatField()  # 更新时间
-    context = TextField(null=True)  # 上下文
-    chat_id = TextField(null=True)  # 聊天ID
-    raise_time = FloatField(null=True)  # 触发次数
+    chat_id = TextField(index=True)  # 聊天ID
+    start_time = DoubleField()  # 起始时间
+    end_time = DoubleField()  # 结束时间
+    original_text = TextField()  # 对话原文
+    participants = TextField()  # 参与的所有人的昵称，JSON格式存储
+    theme = TextField()  # 主题：这段对话的主要内容，一个简短的标题
+    keywords = TextField()  # 关键词：这段对话的关键词，JSON格式存储
+    summary = TextField()  # 概括：对这段话的平文本概括
+    key_point = TextField(null=True)  # 关键信息：话题中的关键信息点，JSON格式存储
+    count = IntegerField(default=0)  # 被检索次数
+    forget_times = IntegerField(default=0)  # 被遗忘检查的次数
 
     class Meta:
-        table_name = "memory_conflicts"
+        table_name = "chat_history"
 
+
+class ThinkingBack(BaseModel):
+    """
+    用于存储记忆检索思考过程的模型
+    """
+
+    chat_id = TextField(index=True)  # 聊天ID
+    question = TextField()  # 提出的问题
+    context = TextField(null=True)  # 上下文信息
+    found_answer = BooleanField(default=False)  # 是否找到答案
+    answer = TextField(null=True)  # 答案内容
+    thinking_steps = TextField(null=True)  # 思考步骤（JSON格式）
+    create_time = DoubleField()  # 创建时间
+    update_time = DoubleField()  # 更新时间
+
+    class Meta:
+        table_name = "thinking_back"
+
+
+MODELS = [
+    ChatStreams,
+    LLMUsage,
+    Emoji,
+    Messages,
+    Images,
+    ImageDescriptions,
+    EmojiDescriptionCache,
+    OnlineTime,
+    PersonInfo,
+    Expression,
+    ActionRecords,
+    Jargon,
+    ChatHistory,
+    ThinkingBack,
+]
 
 
 def create_tables():
@@ -351,22 +417,7 @@ def create_tables():
     创建所有在模型中定义的数据库表。
     """
     with db:
-        db.create_tables(
-            [
-                ChatStreams,
-                LLMUsage,
-                Emoji,
-                Messages,
-                Images,
-                ImageDescriptions,
-                OnlineTime,
-                PersonInfo,
-                Expression,
-                ActionRecords,  # 添加 ActionRecords 到初始化列表
-                MemoryChest,
-                MemoryConflict,  # 添加记忆冲突表
-            ]
-        )
+        db.create_tables(MODELS)
 
 
 def initialize_database(sync_constraints=False):
@@ -379,24 +430,9 @@ def initialize_database(sync_constraints=False):
                                如果为 True，会检查并修复字段的 NULL 约束不一致问题。
     """
 
-    models = [
-        ChatStreams,
-        LLMUsage,
-        Emoji,
-        Messages,
-        Images,
-        ImageDescriptions,
-        OnlineTime,
-        PersonInfo,
-        Expression,
-        ActionRecords,  # 添加 ActionRecords 到初始化列表
-        MemoryChest,
-        MemoryConflict,
-    ]
-
     try:
         with db:  # 管理 table_exists 检查的连接
-            for model in models:
+            for model in MODELS:
                 table_name = model._meta.table_name
                 if not db.table_exists(model):
                     logger.warning(f"表 '{table_name}' 未找到，正在创建...")
@@ -476,24 +512,9 @@ def sync_field_constraints():
     如果发现不一致，会自动修复字段约束。
     """
 
-    models = [
-        ChatStreams,
-        LLMUsage,
-        Emoji,
-        Messages,
-        Images,
-        ImageDescriptions,
-        OnlineTime,
-        PersonInfo,
-        Expression,
-        ActionRecords,
-        MemoryChest,
-        MemoryConflict,
-    ]
-
     try:
         with db:
-            for model in models:
+            for model in MODELS:
                 table_name = model._meta.table_name
                 if not db.table_exists(model):
                     logger.warning(f"表 '{table_name}' 不存在，跳过约束检查")
@@ -568,22 +589,41 @@ def _fix_table_constraints(table_name, model, constraints_to_fix):
         db.execute_sql(f"CREATE TABLE {backup_table} AS SELECT * FROM {table_name}")
         logger.info(f"已创建备份表 '{backup_table}'")
 
-        # 2. 删除原表
+        # 2. 获取原始行数（在删除表之前）
+        original_count = db.execute_sql(f"SELECT COUNT(*) FROM {backup_table}").fetchone()[0]
+        logger.info(f"备份表 '{backup_table}' 包含 {original_count} 行数据")
+
+        # 3. 删除原表
         db.execute_sql(f"DROP TABLE {table_name}")
         logger.info(f"已删除原表 '{table_name}'")
 
-        # 3. 重新创建表（使用当前模型定义）
+        # 4. 重新创建表（使用当前模型定义）
         db.create_tables([model])
         logger.info(f"已重新创建表 '{table_name}' 使用新的约束")
 
-        # 4. 从备份表恢复数据
-        # 获取字段列表
+        # 5. 从备份表恢复数据
+        # 获取字段列表，排除主键字段（让数据库自动生成新的主键）
         fields = list(model._meta.fields.keys())
-        fields_str = ", ".join(fields)
+        # Peewee 默认使用 'id' 作为主键字段名
+        # 尝试获取主键字段名，如果获取失败则默认使用 'id'
+        primary_key_name = "id"  # 默认值
+        try:
+            if hasattr(model._meta, "primary_key") and model._meta.primary_key:
+                if hasattr(model._meta.primary_key, "name"):
+                    primary_key_name = model._meta.primary_key.name
+                elif isinstance(model._meta.primary_key, str):
+                    primary_key_name = model._meta.primary_key
+        except Exception:
+            pass  # 如果获取失败，使用默认值 'id'
 
-        # 对于需要从 NOT NULL 改为 NULL 的字段，直接复制数据
-        # 对于需要从 NULL 改为 NOT NULL 的字段，需要处理 NULL 值
-        insert_sql = f"INSERT INTO {table_name} ({fields_str}) SELECT {fields_str} FROM {backup_table}"
+        # 如果字段列表包含主键，则排除它
+        if primary_key_name in fields:
+            fields_without_pk = [f for f in fields if f != primary_key_name]
+            logger.info(f"排除主键字段 '{primary_key_name}'，让数据库自动生成新的主键")
+        else:
+            fields_without_pk = fields
+
+        fields_str = ", ".join(fields_without_pk)
 
         # 检查是否有字段需要从 NULL 改为 NOT NULL
         null_to_notnull_fields = [
@@ -596,7 +636,7 @@ def _fix_table_constraints(table_name, model, constraints_to_fix):
 
             # 构建更复杂的 SELECT 语句来处理 NULL 值
             select_fields = []
-            for field_name in fields:
+            for field_name in fields_without_pk:
                 if field_name in null_to_notnull_fields:
                     field_obj = model._meta.fields[field_name]
                     # 根据字段类型设置默认值
@@ -617,12 +657,13 @@ def _fix_table_constraints(table_name, model, constraints_to_fix):
 
             select_str = ", ".join(select_fields)
             insert_sql = f"INSERT INTO {table_name} ({fields_str}) SELECT {select_str} FROM {backup_table}"
+        else:
+            # 没有需要处理 NULL 的字段，直接复制数据（排除主键）
+            insert_sql = f"INSERT INTO {table_name} ({fields_str}) SELECT {fields_str} FROM {backup_table}"
 
         db.execute_sql(insert_sql)
         logger.info(f"已从备份表恢复数据到 '{table_name}'")
 
-        # 5. 验证数据完整性
-        original_count = db.execute_sql(f"SELECT COUNT(*) FROM {backup_table}").fetchone()[0]
         new_count = db.execute_sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
 
         if original_count == new_count:
@@ -660,26 +701,11 @@ def check_field_constraints():
     用于在修复前预览需要修复的内容。
     """
 
-    models = [
-        ChatStreams,
-        LLMUsage,
-        Emoji,
-        Messages,
-        Images,
-        ImageDescriptions,
-        OnlineTime,
-        PersonInfo,
-        Expression,
-        ActionRecords,
-        MemoryChest,
-        MemoryConflict,
-    ]
-
     inconsistencies = {}
 
     try:
         with db:
-            for model in models:
+            for model in MODELS:
                 table_name = model._meta.table_name
                 if not db.table_exists(model):
                     continue

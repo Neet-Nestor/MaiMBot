@@ -7,7 +7,6 @@ from maim_message import UserInfo, Seg, GroupInfo
 
 from src.common.logger import get_logger
 from src.config.config import global_config
-from src.mood.mood_manager import mood_manager  # 导入情绪管理器
 from src.chat.message_receive.chat_stream import get_chat_manager
 from src.chat.message_receive.message import MessageRecv
 from src.chat.message_receive.storage import MessageStorage
@@ -15,7 +14,6 @@ from src.chat.heart_flow.heartflow_message_processor import HeartFCMessageReceiv
 from src.chat.utils.prompt_builder import Prompt, global_prompt_manager
 from src.plugin_system.core import component_registry, events_manager, global_announcement_manager
 from src.plugin_system.base import BaseCommand, EventType
-from src.person_info.person_info import Person
 
 # 定义日志配置
 
@@ -74,7 +72,6 @@ class ChatBot:
     def __init__(self):
         self.bot = None  # bot 实例引用
         self._started = False
-        self.mood_manager = mood_manager  # 获取情绪管理器单例
         self.heartflow_message_receiver = HeartFCMessageReceiver()  # 新增
 
     async def _ensure_started(self):
@@ -84,7 +81,7 @@ class ChatBot:
 
             self._started = True
 
-    async def _process_commands_with_new_system(self, message: MessageRecv):
+    async def _process_commands(self, message: MessageRecv):
         # sourcery skip: use-named-expression
         """使用新插件系统处理命令"""
         try:
@@ -116,16 +113,21 @@ class ChatBot:
 
                 try:
                     # 执行命令
-                    success, response, intercept_message = await command_instance.execute()
+                    success, response, intercept_message_level = await command_instance.execute()
+                    message.intercept_message_level = intercept_message_level
 
                     # 记录命令执行结果
                     if success:
-                        logger.info(f"命令执行成功: {command_class.__name__} (拦截: {intercept_message})")
+                        logger.info(f"命令执行成功: {command_class.__name__} (拦截等级: {intercept_message_level})")
                     else:
                         logger.warning(f"命令执行失败: {command_class.__name__} - {response}")
 
                     # 根据命令的拦截设置决定是否继续处理消息
-                    return True, response, not intercept_message  # 找到命令，根据intercept_message决定是否继续
+                    return (
+                        True,
+                        response,
+                        not bool(intercept_message_level),
+                    )  # 找到命令，根据intercept_message决定是否继续
 
                 except Exception as e:
                     logger.error(f"执行命令时出错: {command_class.__name__} - {e}")
@@ -171,7 +173,11 @@ class ChatBot:
 
                 # 撤回事件打印；无法获取被撤回者则省略
                 if sub_type == "recall":
-                    op_name = getattr(op, "user_cardname", None) or getattr(op, "user_nickname", None) or str(getattr(op, "user_id", None))
+                    op_name = (
+                        getattr(op, "user_cardname", None)
+                        or getattr(op, "user_nickname", None)
+                        or str(getattr(op, "user_id", None))
+                    )
                     recalled_name = None
                     try:
                         if isinstance(recalled, dict):
@@ -189,7 +195,7 @@ class ChatBot:
                         logger.info(f"{op_name} 撤回了消息")
                 else:
                     logger.debug(
-                        f"[notice] sub_type={sub_type} scene={scene} op={getattr(op,'user_nickname',None)}({getattr(op,'user_id',None)}) "
+                        f"[notice] sub_type={sub_type} scene={scene} op={getattr(op, 'user_nickname', None)}({getattr(op, 'user_id', None)}) "
                         f"gid={gid} msg_id={msg_id} recalled={recalled_id}"
                     )
             except Exception:
@@ -234,7 +240,6 @@ class ChatBot:
             # 确保所有任务已启动
             await self._ensure_started()
 
-
             if message_data["message_info"].get("group_info") is not None:
                 message_data["message_info"]["group_info"]["group_id"] = str(
                     message_data["message_info"]["group_info"]["group_id"]
@@ -258,7 +263,7 @@ class ChatBot:
                 message.message_segment = Seg(type="seglist", data=modified_message.message_segments)
 
             if await self.handle_notice_message(message):
-                return
+                pass
 
             # 处理消息内容，生成纯文本
             await message.process()
@@ -292,7 +297,7 @@ class ChatBot:
             #     return
 
             # 命令处理 - 使用新插件系统检查并处理命令
-            is_command, cmd_result, continue_process = await self._process_commands_with_new_system(message)
+            is_command, cmd_result, continue_process = await self._process_commands(message)
 
             # 如果是命令且不需要继续处理，则直接返回
             if is_command and not continue_process:

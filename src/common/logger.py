@@ -19,6 +19,10 @@ PROJECT_ROOT = logger_file.parent.parent.parent.resolve()
 # 全局handler实例，避免重复创建
 _file_handler = None
 _console_handler = None
+_ws_handler = None
+# 全局标志，防止重复初始化
+_logging_initialized = False
+_cleanup_task_started = False
 
 
 def get_file_handler():
@@ -57,6 +61,35 @@ def get_console_handler():
         console_level = LOG_CONFIG.get("console_log_level", LOG_CONFIG.get("log_level", "INFO"))
         _console_handler.setLevel(getattr(logging, console_level.upper(), logging.INFO))
     return _console_handler
+
+
+def get_ws_handler():
+    """获取 WebSocket handler 单例"""
+    global _ws_handler
+    if _ws_handler is None:
+        _ws_handler = WebSocketLogHandler()
+        # WebSocket handler 推送所有级别的日志
+        _ws_handler.setLevel(logging.DEBUG)
+    return _ws_handler
+
+
+def initialize_ws_handler(loop):
+    """初始化 WebSocket handler 的事件循环
+
+    Args:
+        loop: asyncio 事件循环
+    """
+    handler = get_ws_handler()
+    handler.set_loop(loop)
+
+    # 为 WebSocket handler 设置 JSON 格式化器（与文件格式相同）
+    handler.setFormatter(file_formatter)
+
+    # 添加到根日志记录器
+    root_logger = logging.getLogger()
+    if handler not in root_logger.handlers:
+        root_logger.addHandler(handler)
+        print("[日志系统] ✅ WebSocket 日志推送已启用")
 
 
 class TimestampedFileHandler(logging.Handler):
@@ -145,12 +178,76 @@ class TimestampedFileHandler(logging.Handler):
         super().close()
 
 
+class WebSocketLogHandler(logging.Handler):
+    """WebSocket 日志处理器 - 将日志实时推送到前端"""
+
+    _log_counter = 0  # 类级别计数器,确保 ID 唯一性
+
+    def __init__(self, loop=None):
+        super().__init__()
+        self.loop = loop
+        self._initialized = False
+
+    def set_loop(self, loop):
+        """设置事件循环"""
+        self.loop = loop
+        self._initialized = True
+
+    def emit(self, record):
+        """发送日志到 WebSocket 客户端"""
+        if not self._initialized or self.loop is None:
+            return
+
+        try:
+            # 获取格式化后的消息
+            # 对于 structlog,formatted message 包含完整的日志信息
+            formatted_msg = self.format(record) if self.formatter else record.getMessage()
+
+            # 如果是 JSON 格式(文件格式化器),解析它
+            message = formatted_msg
+            try:
+                import json
+
+                log_dict = json.loads(formatted_msg)
+                message = log_dict.get("event", formatted_msg)
+            except (json.JSONDecodeError, ValueError):
+                # 不是 JSON,直接使用消息
+                message = formatted_msg
+
+            # 生成唯一 ID: 时间戳毫秒 + 自增计数器
+            WebSocketLogHandler._log_counter += 1
+            log_id = f"{int(record.created * 1000)}_{WebSocketLogHandler._log_counter}"
+
+            # 格式化日志数据
+            log_data = {
+                "id": log_id,
+                "timestamp": datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S"),
+                "level": record.levelname,
+                "module": record.name,
+                "message": message,
+            }
+
+            # 异步广播日志(不阻塞日志记录)
+            try:
+                import asyncio
+                from src.webui.logs_ws import broadcast_log
+
+                asyncio.run_coroutine_threadsafe(broadcast_log(log_data), self.loop)
+            except Exception:
+                # WebSocket 推送失败不影响日志记录
+                pass
+
+        except Exception:
+            # 不要让 WebSocket 错误影响日志系统
+            self.handleError(record)
+
+
 # 旧的轮转文件处理器已移除，现在使用基于时间戳的处理器
 
 
 def close_handlers():
     """安全关闭所有handler"""
-    global _file_handler, _console_handler
+    global _file_handler, _console_handler, _ws_handler
 
     if _file_handler:
         _file_handler.close()
@@ -159,6 +256,10 @@ def close_handlers():
     if _console_handler:
         _console_handler.close()
         _console_handler = None
+
+    if _ws_handler:
+        _ws_handler.close()
+        _ws_handler = None
 
 
 def remove_duplicate_handlers():  # sourcery skip: for-append-to-extend, list-comprehension
@@ -351,6 +452,7 @@ MODULE_COLORS = {
     # 核心模块
     "main": "\033[1;97m",  # 亮白色+粗体 (主程序)
     "memory": "\033[38;5;34m",  # 天蓝色
+    "memory_retrieval": "\033[38;5;34m",  # 天蓝色
     "config": "\033[93m",  # 亮黄色
     "common": "\033[95m",  # 亮紫色
     "tools": "\033[96m",  # 亮青色
@@ -372,6 +474,8 @@ MODULE_COLORS = {
     "chat_stream": "\033[38;5;51m",  # 亮青色
     "message_storage": "\033[38;5;33m",  # 深蓝色
     "expressor": "\033[38;5;166m",  # 橙色
+    # jargon相关
+    "jargon": "\033[38;5;220m",  # 金黄色，突出显示
     # 插件系统
     "plugins": "\033[31m",  # 红色
     "plugin_api": "\033[33m",  # 黄色
@@ -440,6 +544,7 @@ MODULE_ALIASES = {
     "database_model": "数据库",
     "mood": "情绪",
     "memory": "记忆",
+    "memory_retrieval": "回忆",
     "tool_executor": "工具",
     "hfc": "聊天节奏",
     "plugin_manager": "插件",
@@ -450,6 +555,7 @@ MODULE_ALIASES = {
     "planner": "规划器",
     "config": "配置",
     "main": "主程序",
+    "chat_history_summarizer": "聊天概括器",
 }
 
 RESET_COLOR = "\033[0m"
@@ -766,29 +872,41 @@ def get_logger(name: Optional[str]) -> structlog.stdlib.BoundLogger:
     return logger
 
 
-def initialize_logging():
+def initialize_logging(verbose: bool = True):
     """手动初始化日志系统，确保所有logger都使用正确的配置
 
     在应用程序的早期调用此函数，确保所有模块都使用统一的日志配置
+    
+    Args:
+        verbose: 是否输出详细的初始化信息。默认为 True。
+                 在 Runner 进程中可以设置为 False 以避免重复的初始化日志。
     """
-    global LOG_CONFIG
+    global LOG_CONFIG, _logging_initialized
+    
+    # 防止重复初始化（在同一进程内）
+    if _logging_initialized:
+        return
+    
+    _logging_initialized = True
+    
     LOG_CONFIG = load_log_config()
     # print(LOG_CONFIG)
     configure_third_party_loggers()
     reconfigure_existing_loggers()
 
     # 启动日志清理任务
-    start_log_cleanup_task()
+    start_log_cleanup_task(verbose=verbose)
 
-    # 输出初始化信息
-    logger = get_logger("logger")
-    console_level = LOG_CONFIG.get("console_log_level", LOG_CONFIG.get("log_level", "INFO"))
-    file_level = LOG_CONFIG.get("file_log_level", LOG_CONFIG.get("log_level", "INFO"))
+    # 只在 verbose=True 时输出详细的初始化信息
+    if verbose:
+        logger = get_logger("logger")
+        console_level = LOG_CONFIG.get("console_log_level", LOG_CONFIG.get("log_level", "INFO"))
+        file_level = LOG_CONFIG.get("file_log_level", LOG_CONFIG.get("log_level", "INFO"))
 
-    logger.info("日志系统已初始化:")
-    logger.info(f"  - 控制台级别: {console_level}")
-    logger.info(f"  - 文件级别: {file_level}")
-    logger.info("  - 轮转份数: 30个文件|自动清理: 30天前的日志")
+        logger.info("日志系统已初始化:")
+        logger.info(f"  - 控制台级别: {console_level}")
+        logger.info(f"  - 文件级别: {file_level}")
+        logger.info("  - 轮转份数: 30个文件|自动清理: 30天前的日志")
 
 
 def cleanup_old_logs():
@@ -821,8 +939,19 @@ def cleanup_old_logs():
         logger.error(f"清理旧日志文件时出错: {e}")
 
 
-def start_log_cleanup_task():
-    """启动日志清理任务"""
+def start_log_cleanup_task(verbose: bool = True):
+    """启动日志清理任务
+    
+    Args:
+        verbose: 是否输出启动信息。默认为 True。
+    """
+    global _cleanup_task_started
+    
+    # 防止重复启动清理任务
+    if _cleanup_task_started:
+        return
+    
+    _cleanup_task_started = True
 
     def cleanup_task():
         while True:
@@ -832,14 +961,15 @@ def start_log_cleanup_task():
     cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
     cleanup_thread.start()
 
-    logger = get_logger("logger")
-    logger.info("已启动日志清理任务，将自动清理30天前的日志文件（轮转份数限制: 30个文件）")
+    if verbose:
+        logger = get_logger("logger")
+        logger.info("已启动日志清理任务，将自动清理30天前的日志文件（轮转份数限制: 30个文件）")
 
 
 def shutdown_logging():
     """优雅关闭日志系统，释放所有文件句柄"""
-    logger = get_logger("logger")
-    logger.info("正在关闭日志系统...")
+    # 先输出到控制台，避免日志系统关闭后无法输出
+    print("[logger] 正在关闭日志系统...")
 
     # 关闭所有handler
     root_logger = logging.getLogger()
@@ -860,4 +990,5 @@ def shutdown_logging():
                     handler.close()
                 logger_obj.removeHandler(handler)
 
-    logger.info("日志系统已关闭")
+    # 使用 print 而不是 logger，因为 logger 已经关闭
+    print("[logger] 日志系统已关闭")

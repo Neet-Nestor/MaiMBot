@@ -4,10 +4,12 @@
 #     print("未找到quick_algo库，无法使用quick_algo算法")
 #     print("请安装quick_algo库 - 在lib.quick_algo中，执行命令：python setup.py build_ext --inplace")
 
+import argparse
 import sys
 import os
 import asyncio
 from time import sleep
+from typing import Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.chat.knowledge.embedding_store import EmbeddingManager
@@ -71,7 +73,12 @@ def hash_deduplicate(
     return new_raw_paragraphs, new_triple_list_data
 
 
-def handle_import_openie(openie_data: OpenIE, embed_manager: EmbeddingManager, kg_manager: KGManager) -> bool:
+def handle_import_openie(
+    openie_data: OpenIE,
+    embed_manager: EmbeddingManager,
+    kg_manager: KGManager,
+    non_interactive: bool = False,
+) -> bool:
     # sourcery skip: extract-method
     # 从OpenIE数据中提取段落原文与三元组列表
     # 索引的段落原文
@@ -124,8 +131,13 @@ def handle_import_openie(openie_data: OpenIE, embed_manager: EmbeddingManager, k
             logger.info("所有数据均完整，没有发现缺失字段。")
             return False
         # 新增：提示用户是否删除非法文段继续导入
-        # 将print移到所有logger.error之后，确保不会被冲掉
+        # 在非交互模式下，不再询问用户，而是直接报错终止
         logger.info(f"\n检测到非法文段，共{len(missing_idxs)}条。")
+        if non_interactive:
+            logger.error(
+                "检测到非法文段且当前处于非交互模式，无法询问是否删除非法文段，导入终止。"
+            )
+            sys.exit(1)
         logger.info("\n是否删除所有非法文段后继续导入？(y/n): ", end="")
         user_choice = input().strip().lower()
         if user_choice != "y":
@@ -174,20 +186,25 @@ def handle_import_openie(openie_data: OpenIE, embed_manager: EmbeddingManager, k
     return True
 
 
-async def main_async():  # sourcery skip: dict-comprehension
+async def main_async(non_interactive: bool = False) -> bool:  # sourcery skip: dict-comprehension
     # 新增确认提示
-    print("=== 重要操作确认 ===")
-    print("OpenIE导入时会大量发送请求，可能会撞到请求速度上限，请注意选用的模型")
-    print("同之前样例：在本地模型下，在70分钟内我们发送了约8万条请求，在网络允许下，速度会更快")
-    print("推荐使用硅基流动的Pro/BAAI/bge-m3")
-    print("每百万Token费用为0.7元")
-    print("知识导入时，会消耗大量系统资源，建议在较好配置电脑上运行")
-    print("同上样例，导入时10700K几乎跑满，14900HX占用80%，峰值内存占用约3G")
-    confirm = input("确认继续执行？(y/n): ").strip().lower()
-    if confirm != "y":
-        logger.info("用户取消操作")
-        print("操作已取消")
-        sys.exit(1)
+    if non_interactive:
+        logger.warning(
+            "当前处于非交互模式，将跳过导入开销确认提示，直接开始执行 OpenIE 导入。"
+        )
+    else:
+        print("=== 重要操作确认 ===")
+        print("OpenIE导入时会大量发送请求，可能会撞到请求速度上限，请注意选用的模型")
+        print("同之前样例：在本地模型下，在70分钟内我们发送了约8万条请求，在网络允许下，速度会更快")
+        print("推荐使用硅基流动的Pro/BAAI/bge-m3")
+        print("每百万Token费用为0.7元")
+        print("知识导入时，会消耗大量系统资源，建议在较好配置电脑上运行")
+        print("同上样例，导入时10700K几乎跑满，14900HX占用80%，峰值内存占用约3G")
+        confirm = input("确认继续执行？(y/n): ").strip().lower()
+        if confirm != "y":
+            logger.info("用户取消操作")
+            print("操作已取消")
+            sys.exit(1)
     print("\n" + "=" * 40 + "\n")
     ensure_openie_dir()  # 确保OpenIE目录存在
     logger.info("----开始导入openie数据----\n")
@@ -235,14 +252,27 @@ async def main_async():  # sourcery skip: dict-comprehension
     except Exception as e:
         logger.error(f"导入OpenIE数据文件时发生错误：{e}")
         return False
-    if handle_import_openie(openie_data, embed_manager, kg_manager) is False:
+    if handle_import_openie(openie_data, embed_manager, kg_manager, non_interactive=non_interactive) is False:
         logger.error("处理OpenIE数据时发生错误")
         return False
-    return None
+    return True
 
 
-def main():
-    """主函数 - 设置新的事件循环并运行异步主函数"""
+def main(argv: Optional[list[str]] = None) -> None:
+    """主函数 - 解析参数并运行异步主流程。"""
+    parser = argparse.ArgumentParser(
+        description=(
+            "OpenIE 导入脚本：读取 data/openie 中的 OpenIE JSON 批次，"
+            "将其导入到 LPMM 的向量库与知识图中。"
+        )
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="非交互模式：跳过导入确认提示以及非法文段删除询问，遇到非法文段时直接报错退出。",
+    )
+    args = parser.parse_args(argv)
+
     # 检查是否有现有的事件循环
     try:
         loop = asyncio.get_running_loop()
@@ -255,13 +285,22 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+    ok: bool = False
     try:
         # 在新的事件循环中运行异步主函数
-        loop.run_until_complete(main_async())
+        ok = loop.run_until_complete(main_async(non_interactive=args.non_interactive))
+        print(
+            "\n[NOTICE] OpenIE 导入脚本执行完毕。如主程序（聊天 / WebUI）已在运行，"
+            "请重启主程序，或在主程序内部调用一次 lpmm_start_up() 以应用最新 LPMM 知识库。"
+        )
+        print("[NOTICE] 如果不清楚 lpmm_start_up 是什么，直接重启主程序即可。")
     finally:
         # 确保事件循环被正确关闭
         if not loop.is_closed():
             loop.close()
+    if not ok:
+        # 统一错误码，方便在非交互场景下检测失败
+        sys.exit(1)
 
 
 if __name__ == "__main__":

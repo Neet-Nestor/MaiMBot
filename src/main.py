@@ -5,16 +5,17 @@ from maim_message import MessageServer
 from src.common.remote import TelemetryHeartBeatTask
 from src.manager.async_task_manager import async_task_manager
 from src.chat.utils.statistic import OnlineTimeRecordTask, StatisticOutputTask
+
+# from src.chat.utils.token_statistics import TokenStatisticsTask
 from src.chat.emoji_system.emoji_manager import get_emoji_manager
 from src.chat.message_receive.chat_stream import get_chat_manager
 from src.config.config import global_config
 from src.chat.message_receive.bot import chat_bot
 from src.common.logger import get_logger
 from src.common.server import get_global_server, Server
-from src.mood.mood_manager import mood_manager
 from src.chat.knowledge import lpmm_start_up
-from src.memory_system.memory_management_task import MemoryManagementTask
 from rich.traceback import install
+
 # from src.api.main import start_api_server
 
 # 导入新的插件管理器
@@ -22,6 +23,8 @@ from src.plugin_system.core.plugin_manager import plugin_manager
 
 # 导入消息API和traceback模块
 from src.common.message import get_global_api
+from src.dream.dream_agent import start_dream_scheduler
+from src.bw_learner.expression_auto_check_task import ExpressionAutoCheckTask
 
 # 插件系统现在使用统一的插件加载器
 
@@ -35,6 +38,26 @@ class MainSystem:
         # 使用消息API替代直接的FastAPI实例
         self.app: MessageServer = get_global_api()
         self.server: Server = get_global_server()
+        self.webui_server = None  # 独立的 WebUI 服务器
+
+        # 设置独立的 WebUI 服务器
+        self._setup_webui_server()
+
+    def _setup_webui_server(self):
+        """设置独立的 WebUI 服务器"""
+        from src.config.config import global_config
+
+        if not global_config.webui.enabled:
+            logger.info("WebUI 已禁用")
+            return
+
+        try:
+            from src.webui.webui_server import get_webui_server
+
+            self.webui_server = get_webui_server()
+
+        except Exception as e:
+            logger.error(f"❌ 初始化 WebUI 服务器失败: {e}")
 
     async def initialize(self):
         """初始化系统组件"""
@@ -68,6 +91,9 @@ class MainSystem:
         # 添加遥测心跳任务
         await async_task_manager.add_task(TelemetryHeartBeatTask())
 
+        # 添加表达方式自动检查任务
+        await async_task_manager.add_task(ExpressionAutoCheckTask())
+
         # 启动API服务器
         # start_api_server()
         # logger.info("API服务器启动成功")
@@ -82,27 +108,17 @@ class MainSystem:
         get_emoji_manager().initialize()
         logger.info("表情包管理器初始化成功")
 
-        # 启动情绪管理器
-        if global_config.mood.enable_mood:
-            await mood_manager.start()
-            logger.info("情绪管理器初始化成功")
-
         # 初始化聊天管理器
         await get_chat_manager()._initialize()
         asyncio.create_task(get_chat_manager()._auto_save_task())
 
         logger.info("聊天管理器初始化成功")
-        
-        # 添加记忆管理任务
-        await async_task_manager.add_task(MemoryManagementTask())
-        logger.info("记忆管理任务已启动")
 
         # await asyncio.sleep(0.5) #防止logger输出飞了
 
         # 将bot.py中的chat_bot.message_process消息处理函数注册到api.py的消息处理基类中
         self.app.register_message_handler(chat_bot.message_process)
         self.app.register_custom_message_handler("message_id_echo", chat_bot.echo_message_process)
-
 
         # 触发 ON_START 事件
         from src.plugin_system.core.events_manager import events_manager
@@ -119,14 +135,22 @@ class MainSystem:
 
     async def schedule_tasks(self):
         """调度定时任务"""
-        while True:
+        try:
             tasks = [
                 get_emoji_manager().start_periodic_check_register(),
+                start_dream_scheduler(),
                 self.app.run(),
                 self.server.run(),
             ]
 
+            # 如果 WebUI 服务器已初始化，添加到任务列表
+            if self.webui_server:
+                tasks.append(self.webui_server.start())
+
             await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            logger.info("调度任务已取消")
+            raise
 
     # async def forget_memory_task(self):
     #     """记忆遗忘任务"""

@@ -28,7 +28,6 @@ class BaseAction(ABC):
     - keyword_case_sensitive: 关键词是否区分大小写
     - parallel_action: 是否允许并行执行
     - random_activation_probability: 随机激活概率
-    - llm_judge_prompt: LLM判断提示词
     """
 
     def __init__(
@@ -77,12 +76,10 @@ class BaseAction(ABC):
         self.action_require: list[str] = getattr(self.__class__, "action_require", []).copy()
 
         """NORMAL模式下的激活类型"""
-        self.activation_type = getattr(self.__class__, "activation_type")
+        self.activation_type = self.__class__.activation_type
         """激活类型"""
         self.random_activation_probability: float = getattr(self.__class__, "random_activation_probability", 0.0)
         """当激活类型为RANDOM时的概率"""
-        self.llm_judge_prompt: str = getattr(self.__class__, "llm_judge_prompt", "")  # 已弃用
-        """协助LLM进行判断的Prompt"""
         self.activation_keywords: list[str] = getattr(self.__class__, "activation_keywords", []).copy()
         """激活类型为KEYWORD时的KEYWORDS列表"""
         self.keyword_case_sensitive: bool = getattr(self.__class__, "keyword_case_sensitive", False)
@@ -108,21 +105,16 @@ class BaseAction(ABC):
         self.is_group = False
         self.target_id = None
 
-
         self.group_id = (
-            str(self.action_message.chat_info.group_info.group_id)
-            if self.action_message.chat_info.group_info
-            else None
+            str(self.action_message.chat_info.group_info.group_id) if self.action_message.chat_info.group_info else None
         )
         self.group_name = (
-            self.action_message.chat_info.group_info.group_name
-            if self.action_message.chat_info.group_info
-            else None
+            self.action_message.chat_info.group_info.group_name if self.action_message.chat_info.group_info else None
         )
 
         self.user_id = str(self.action_message.user_info.user_id)
         self.user_nickname = self.action_message.user_info.user_nickname
-        
+
         if self.group_id:
             self.is_group = True
             self.target_id = self.group_id
@@ -131,7 +123,6 @@ class BaseAction(ABC):
             self.is_group = False
             self.target_id = self.user_id
             self.log_prefix = f"[{self.user_nickname} 的 私聊]"
-
 
         logger.debug(
             f"{self.log_prefix} 聊天信息: 类型={'群聊' if self.is_group else '私聊'}, 平台={self.platform}, 目标={self.target_id}"
@@ -448,7 +439,6 @@ class BaseAction(ABC):
 
             wait_start_time = asyncio.get_event_loop().time()
             while True:
-
                 # 检查新消息
                 current_time = time.time()
                 new_message_count = message_api.count_new_messages(
@@ -497,7 +487,7 @@ class BaseAction(ABC):
             raise ValueError(f"Action名称 '{name}' 包含非法字符 '.'，请使用下划线替代")
         # 获取focus_activation_type和normal_activation_type
         focus_activation_type = getattr(cls, "focus_activation_type", ActionActivationType.ALWAYS)
-        normal_activation_type = getattr(cls, "normal_activation_type", ActionActivationType.ALWAYS)
+        _normal_activation_type = getattr(cls, "normal_activation_type", ActionActivationType.ALWAYS)
 
         # 处理activation_type：如果插件中声明了就用插件的值，否则默认使用focus_activation_type
         activation_type = getattr(cls, "activation_type", focus_activation_type)
@@ -511,7 +501,6 @@ class BaseAction(ABC):
             keyword_case_sensitive=getattr(cls, "keyword_case_sensitive", False),
             parallel_action=getattr(cls, "parallel_action", True),
             random_activation_probability=getattr(cls, "random_activation_probability", 0.0),
-            llm_judge_prompt=getattr(cls, "llm_judge_prompt", ""),
             # 使用正确的字段名
             action_parameters=getattr(cls, "action_parameters", {}).copy(),
             action_require=getattr(cls, "action_require", []).copy(),

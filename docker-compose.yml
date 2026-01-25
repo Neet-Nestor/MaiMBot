@@ -27,18 +27,20 @@ services:
     # image: infinitycat/maibot:dev
     environment:
       - TZ=Asia/Shanghai
-#      - EULA_AGREE=99f08e0cab0190de853cb6af7d64d4de # 同意EULA
+#      - EULA_AGREE=1b662741904d7155d1ce1c00b3530d0d # 同意EULA
 #      - PRIVACY_AGREE=9943b855e72199d0f5016ea39052f1b6 # 同意EULA
-#    ports:
+    ports:
+      - "18001:8001" # webui端口
 #      - "8000:8000"
     volumes:
       - ./docker-config/mmc/.env:/MaiMBot/.env # 持久化env配置文件
       - ./docker-config/mmc:/MaiMBot/config # 持久化bot配置文件
+      - ./docker-config/adapters:/MaiMBot/adapters-config # adapter配置文件夹映射
       - ./data/MaiMBot/maibot_statistics.html:/MaiMBot/maibot_statistics.html #统计数据输出
       - ./data/MaiMBot:/MaiMBot/data # 共享目录
       - ./data/MaiMBot/plugins:/MaiMBot/plugins # 插件目录
       - ./data/MaiMBot/logs:/MaiMBot/logs # 日志目录
-      - site-packages:/usr/local/lib/python3.13/site-packages # 持久化Python包
+      # - site-packages:/usr/local/lib/python3.13/site-packages # 持久化Python包，需要时启用
     restart: always
     networks:
       - maim_bot
@@ -86,8 +88,8 @@ services:
   #   networks:
   #     - maim_bot
   
-volumes:
-  site-packages:
+# volumes:         #  若需要持久化Python包时启用
+#   site-packages:
 networks:
   maim_bot:
     driver: bridge

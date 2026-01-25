@@ -93,6 +93,14 @@ class ToolExecutor:
         # 获取可用工具
         tools = self._get_tool_definitions()
 
+        # 如果没有可用工具，直接返回空内容
+        if not tools:
+            logger.debug(f"{self.log_prefix}没有可用工具，直接返回空内容")
+            if return_details:
+                return [], [], ""
+            else:
+                return [], [], ""
+
         # print(f"tools: {tools}")
 
         # 获取当前时间
@@ -180,9 +188,8 @@ class ToolExecutor:
                         tool_info["content"] = str(content)
                     # 空内容直接跳过（空字符串、全空白字符串、空列表/空元组）
                     content_check = tool_info["content"]
-                    if (
-                        (isinstance(content_check, str) and not content_check.strip())
-                        or (isinstance(content_check, (list, tuple)) and len(content_check) == 0)
+                    if (isinstance(content_check, str) and not content_check.strip()) or (
+                        isinstance(content_check, (list, tuple)) and len(content_check) == 0
                     ):
                         logger.debug(f"{self.log_prefix}工具{tool_name}无有效内容，跳过展示")
                         continue

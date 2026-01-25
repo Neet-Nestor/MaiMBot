@@ -36,7 +36,7 @@ from ..payload_content.message import Message, RoleType
 from ..payload_content.resp_format import RespFormat
 from ..payload_content.tool_option import ToolOption, ToolParam, ToolCall
 
-logger = get_logger("OpenAI客户端")
+logger = get_logger("llm_models")
 
 
 def _convert_messages(messages: list[Message]) -> list[ChatCompletionMessageParam]:
@@ -61,10 +61,16 @@ def _convert_messages(messages: list[Message]) -> list[ChatCompletionMessagePara
             content = []
             for item in message.content:
                 if isinstance(item, tuple):
+                    image_format = item[0].lower()
+                    # 规范 JPEG MIME 类型后缀，统一使用 image/jpeg
+                    if image_format in ("jpg", "jpeg"):
+                        mime_suffix = "jpeg"
+                    else:
+                        mime_suffix = image_format
                     content.append(
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/{item[0].lower()};base64,{item[1]}"},
+                            "image_url": {"url": f"data:image/{mime_suffix};base64,{item[1]}"},
                         }
                     )
                 elif isinstance(item, str):
@@ -76,6 +82,23 @@ def _convert_messages(messages: list[Message]) -> list[ChatCompletionMessagePara
             "role": message.role.value,
             "content": content,
         }
+
+        if message.role == RoleType.Assistant and getattr(message, "tool_calls", None):
+            tool_calls_payload: list[dict[str, Any]] = []
+            for call in message.tool_calls or []:
+                tool_calls_payload.append(
+                    {
+                        "id": call.call_id,
+                        "type": "function",
+                        "function": {
+                            "name": call.func_name,
+                            "arguments": json.dumps(call.args or {}, ensure_ascii=False),
+                        },
+                    }
+                )
+            ret["tool_calls"] = tool_calls_payload
+            if ret["content"] == []:
+                ret["content"] = ""
 
         # 添加工具调用ID
         if message.role == RoleType.Tool:
@@ -101,8 +124,17 @@ def _convert_tool_options(tool_options: list[ToolOption]) -> list[dict[str, Any]
         :param tool_option_param: 工具参数对象
         :return: 转换后的工具参数字典
         """
+        # JSON Schema 类型名称修正：
+        # - 布尔类型使用 "boolean" 而不是 "bool"
+        # - 浮点数使用 "number" 而不是 "float"
+        param_type_value = tool_option_param.param_type.value
+        if param_type_value == "bool":
+            param_type_value = "boolean"
+        elif param_type_value == "float":
+            param_type_value = "number"
+
         return_dict: dict[str, Any] = {
-            "type": tool_option_param.param_type.value,
+            "type": param_type_value,
             "description": tool_option_param.description,
         }
         if tool_option_param.enum_values:
@@ -239,7 +271,7 @@ def _build_stream_api_resp(
 
     # 检查 max_tokens 截断（流式的告警改由处理函数统一输出，这里不再输出）
     # 保留 finish_reason 仅用于上层判断
-    
+
     if not resp.content and not resp.tool_calls:
         raise EmptyResponseException()
 
@@ -293,7 +325,7 @@ async def _default_stream_response_handler(
 
         if hasattr(event.choices[0], "finish_reason") and event.choices[0].finish_reason:
             finish_reason = event.choices[0].finish_reason
-        
+
         if hasattr(event, "model") and event.model and not _model_name:
             _model_name = event.model  # 记录模型名
 
@@ -341,10 +373,7 @@ async def _default_stream_response_handler(
                 model_dbg = None
 
             # 统一日志格式
-            logger.info(
-                "模型%s因为超过最大max_token限制，可能仅输出部分内容，可视情况调整"
-                % (model_dbg or "")
-            )
+            logger.info("模型%s因为超过最大max_token限制，可能仅输出部分内容，可视情况调整" % (model_dbg or ""))
 
         return resp, _usage_record
     except Exception:
@@ -387,9 +416,7 @@ def _default_normal_response_parser(
                 raw_snippet = str(resp)[:300]
             except Exception:
                 raw_snippet = "<unserializable>"
-            logger.debug(
-                f"empty choices: model={model_dbg} id={id_dbg} usage={usage_dbg} raw≈{raw_snippet}"
-            )
+            logger.debug(f"empty choices: model={model_dbg} id={id_dbg} usage={usage_dbg} raw≈{raw_snippet}")
         except Exception:
             # 日志采集失败不应影响控制流
             pass
@@ -420,8 +447,20 @@ def _default_normal_response_parser(
         for call in message_part.tool_calls:
             try:
                 arguments = json.loads(repair_json(call.function.arguments))
+                # 【新增修复逻辑】如果解析出来还是字符串，说明发生了双重编码，尝试二次解析
+                if isinstance(arguments, str):
+                    try:
+                        # 尝试对字符串内容再次进行修复和解析
+                        arguments = json.loads(repair_json(arguments))
+                    except Exception:
+                        # 如果二次解析失败，保留原值，让下方的 isinstance(dict) 抛出更具体的错误
+                        pass
                 if not isinstance(arguments, dict):
-                    raise RespParseException(resp, "响应解析失败，工具调用参数无法解析为字典类型")
+                    # 此时为了调试方便，建议打印出 arguments 的类型
+                    raise RespParseException(
+                        resp, 
+                        f"响应解析失败，工具调用参数无法解析为字典类型 type={type(arguments)} arguments={arguments}"
+                    )
                 api_response.tool_calls.append(ToolCall(call.id, call.function.name, arguments))
             except json.JSONDecodeError as e:
                 raise RespParseException(resp, "响应解析失败，无法解析工具调用参数") from e
@@ -444,17 +483,14 @@ def _default_normal_response_parser(
         choice0 = resp.choices[0]
         reason = getattr(choice0, "finish_reason", None)
         if reason and reason == "length":
-            print(resp)
+            # print(resp)
             _model_name = resp.model
             # 统一日志格式
-            logger.info(
-                "模型%s因为超过最大max_token限制，可能仅输出部分内容，可视情况调整"
-                % (_model_name or "")
-            )
+            logger.info("模型%s因为超过最大max_token限制，可能仅输出部分内容，可视情况调整" % (_model_name or ""))
             return api_response, _usage_record
     except Exception as e:
         logger.debug(f"检查 MAX_TOKENS 截断时异常: {e}")
-    
+
     if not api_response.content and not api_response.tool_calls:
         raise EmptyResponseException()
 

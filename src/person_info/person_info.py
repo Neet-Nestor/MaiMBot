@@ -13,12 +13,13 @@ from src.common.database.database import db
 from src.common.database.database_model import PersonInfo
 from src.llm_models.utils_model import LLMRequest
 from src.config.config import global_config, model_config
+from src.chat.message_receive.chat_stream import get_chat_manager
 
 
 logger = get_logger("person_info")
 
 relation_selection_model = LLMRequest(
-    model_set=model_config.model_task_config.utils_small, request_type="relation_selection"
+    model_set=model_config.model_task_config.tool_use, request_type="relation_selection"
 )
 
 
@@ -160,7 +161,14 @@ def levenshtein_distance(s1: str, s2: str) -> int:
 
 class Person:
     @classmethod
-    def register_person(cls, platform: str, user_id: str, nickname: str):
+    def register_person(
+        cls,
+        platform: str,
+        user_id: str,
+        nickname: str,
+        group_id: Optional[str] = None,
+        group_nick_name: Optional[str] = None,
+    ):
         """
         注册新用户的类方法
         必须输入 platform、user_id 和 nickname 参数
@@ -169,6 +177,8 @@ class Person:
             platform: 平台名称
             user_id: 用户ID
             nickname: 用户昵称
+            group_id: 群号（可选，仅在群聊时提供）
+            group_nick_name: 群昵称（可选，仅在群聊时提供）
 
         Returns:
             Person: 新注册的Person实例
@@ -182,7 +192,11 @@ class Person:
 
         if is_person_known(person_id=person_id):
             logger.debug(f"用户 {nickname} 已存在")
-            return Person(person_id=person_id)
+            person = Person(person_id=person_id)
+            # 如果是群聊，更新群昵称
+            if group_id and group_nick_name:
+                person.add_group_nick_name(group_id, group_nick_name)
+            return person
 
         # 创建Person实例
         person = cls.__new__(cls)
@@ -201,6 +215,11 @@ class Person:
         person.know_since = time.time()
         person.last_know = time.time()
         person.memory_points = []
+        person.group_nick_name = []  # 初始化群昵称列表
+
+        # 如果是群聊，添加群昵称
+        if group_id and group_nick_name:
+            person.add_group_nick_name(group_id, group_nick_name)
 
         # 同步到数据库
         person.sync_to_database()
@@ -209,14 +228,66 @@ class Person:
 
         return person
 
+    def _is_bot_self(self, platform: str, user_id: str) -> bool:
+        """判断给定的平台和用户ID是否是机器人自己
+
+        这个函数统一处理所有平台（包括 QQ、Telegram、WebUI 等）的机器人识别逻辑。
+
+        Args:
+            platform: 消息平台（如 "qq", "telegram", "webui" 等）
+            user_id: 用户ID
+
+        Returns:
+            bool: 如果是机器人自己则返回 True，否则返回 False
+        """
+        if not platform or not user_id:
+            return False
+
+        # 将 user_id 转为字符串进行比较
+        user_id_str = str(user_id)
+
+        # 获取机器人的 QQ 账号（主账号）
+        qq_account = str(global_config.bot.qq_account or "")
+
+        # QQ 平台：直接比较 QQ 账号
+        if platform == "qq":
+            return user_id_str == qq_account
+
+        # WebUI 平台：机器人回复时使用的是 QQ 账号，所以也比较 QQ 账号
+        if platform == "webui":
+            return user_id_str == qq_account
+
+        # 获取各平台账号映射
+        platforms_list = getattr(global_config.bot, "platforms", []) or []
+        platform_accounts = {}
+        for platform_entry in platforms_list:
+            if ":" in platform_entry:
+                platform_name, account = platform_entry.split(":", 1)
+                platform_accounts[platform_name.strip()] = account.strip()
+
+        # Telegram 平台
+        if platform == "telegram":
+            tg_account = platform_accounts.get("tg", "") or platform_accounts.get("telegram", "")
+            return user_id_str == tg_account if tg_account else False
+
+        # 其他平台：尝试从 platforms 配置中查找
+        platform_account = platform_accounts.get(platform, "")
+        if platform_account:
+            return user_id_str == platform_account
+
+        # 默认情况：与主 QQ 账号比较（兼容性）
+        return user_id_str == qq_account
+
     def __init__(self, platform: str = "", user_id: str = "", person_id: str = "", person_name: str = ""):
-        if platform == global_config.bot.platform and user_id == global_config.bot.qq_account:
+        # 使用统一的机器人识别函数（支持多平台，包括 WebUI）
+        if self._is_bot_self(platform, user_id):
             self.is_known = True
             self.person_id = get_person_id(platform, user_id)
             self.user_id = user_id
             self.platform = platform
             self.nickname = global_config.bot.nickname
             self.person_name = global_config.bot.nickname
+            self.group_nick_name: list[dict[str, str]] = []
             return
 
         self.user_id = ""
@@ -255,6 +326,7 @@ class Person:
         self.know_since = None
         self.last_know: Optional[float] = None
         self.memory_points = []
+        self.group_nick_name: list[dict[str, str]] = []  # 群昵称列表，存储 {"group_id": str, "group_nick_name": str}
 
         # 从数据库加载数据
         self.load_from_database()
@@ -342,6 +414,31 @@ class Person:
             return memory_list
         return random.sample(memory_list, num)
 
+    def add_group_nick_name(self, group_id: str, group_nick_name: str):
+        """
+        添加或更新群昵称
+
+        Args:
+            group_id: 群号
+            group_nick_name: 群昵称
+        """
+        if not group_id or not group_nick_name:
+            return
+
+        # 检查是否已存在该群号的记录
+        for item in self.group_nick_name:
+            if item.get("group_id") == group_id:
+                # 更新现有记录
+                item["group_nick_name"] = group_nick_name
+                self.sync_to_database()
+                logger.debug(f"更新用户 {self.person_id} 在群 {group_id} 的群昵称为 {group_nick_name}")
+                return
+
+        # 添加新记录
+        self.group_nick_name.append({"group_id": group_id, "group_nick_name": group_nick_name})
+        self.sync_to_database()
+        logger.debug(f"添加用户 {self.person_id} 在群 {group_id} 的群昵称 {group_nick_name}")
+
     def load_from_database(self):
         """从数据库加载个人信息数据"""
         try:
@@ -371,6 +468,21 @@ class Person:
                         self.memory_points = []
                 else:
                     self.memory_points = []
+
+                # 处理group_nick_name字段（JSON格式的列表）
+                if record.group_nick_name:
+                    try:
+                        loaded_group_nick_names = json.loads(record.group_nick_name)
+                        # 确保是列表格式
+                        if isinstance(loaded_group_nick_names, list):
+                            self.group_nick_name = loaded_group_nick_names
+                        else:
+                            self.group_nick_name = []
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"解析用户 {self.person_id} 的group_nick_name字段失败，使用默认值")
+                        self.group_nick_name = []
+                else:
+                    self.group_nick_name = []
 
                 logger.debug(f"已从数据库加载用户 {self.person_id} 的信息")
             else:
@@ -402,6 +514,9 @@ class Person:
                     [point for point in self.memory_points if point is not None], ensure_ascii=False
                 )
                 if self.memory_points
+                else json.dumps([], ensure_ascii=False),
+                "group_nick_name": json.dumps(self.group_nick_name, ensure_ascii=False)
+                if self.group_nick_name
                 else json.dumps([], ensure_ascii=False),
             }
 
@@ -664,3 +779,78 @@ class PersonInfoManager:
 
 
 person_info_manager = PersonInfoManager()
+
+
+async def store_person_memory_from_answer(person_name: str, memory_content: str, chat_id: str) -> None:
+    """将人物信息存入person_info的memory_points
+
+    Args:
+        person_name: 人物名称
+        memory_content: 记忆内容
+        chat_id: 聊天ID
+    """
+    try:
+        # 从chat_id获取chat_stream
+        chat_stream = get_chat_manager().get_stream(chat_id)
+        if not chat_stream:
+            logger.warning(f"无法获取chat_stream for chat_id: {chat_id}")
+            return
+
+        platform = chat_stream.platform
+
+        # 尝试从person_name查找person_id
+        # 首先尝试通过person_name查找
+        person_id = get_person_id_by_person_name(person_name)
+
+        if not person_id:
+            # 如果通过person_name找不到，尝试从chat_stream获取user_info
+            if chat_stream.user_info:
+                user_id = chat_stream.user_info.user_id
+                person_id = get_person_id(platform, user_id)
+            else:
+                logger.warning(f"无法确定person_id for person_name: {person_name}, chat_id: {chat_id}")
+                return
+
+        # 创建或获取Person对象
+        person = Person(person_id=person_id)
+
+        if not person.is_known:
+            logger.warning(f"用户 {person_name} (person_id: {person_id}) 尚未认识，无法存储记忆")
+            return
+
+        # 确定记忆分类（可以根据memory_content判断，这里使用通用分类）
+        category = "其他"  # 默认分类，可以根据需要调整
+
+        # 记忆点格式：category:content:weight
+        weight = "1.0"  # 默认权重
+        memory_point = f"{category}:{memory_content}:{weight}"
+
+        # 添加到memory_points
+        if not person.memory_points:
+            person.memory_points = []
+
+        # 检查是否已存在相似的记忆点（避免重复）
+        is_duplicate = False
+        for existing_point in person.memory_points:
+            if existing_point and isinstance(existing_point, str):
+                parts = existing_point.split(":", 2)
+                if len(parts) >= 2:
+                    existing_content = parts[1].strip()
+                    # 简单相似度检查（如果内容相同或非常相似，则跳过）
+                    if (
+                        existing_content == memory_content
+                        or memory_content in existing_content
+                        or existing_content in memory_content
+                    ):
+                        is_duplicate = True
+                        break
+
+        if not is_duplicate:
+            person.memory_points.append(memory_point)
+            person.sync_to_database()
+            logger.info(f"成功添加记忆点到 {person_name} (person_id: {person_id}): {memory_point}")
+        else:
+            logger.debug(f"记忆点已存在，跳过: {memory_point}")
+
+    except Exception as e:
+        logger.error(f"存储人物记忆失败: {e}")

@@ -11,6 +11,9 @@ from .base import (
     BaseCommand,
     BaseTool,
     ConfigField,
+    ConfigSection,
+    ConfigLayout,
+    ConfigTab,
     ComponentType,
     ActionActivationType,
     ChatMode,
@@ -83,6 +86,7 @@ __all__ = [
     "person_api",
     "plugin_manage_api",
     "send_api",
+    "auto_talk_api",
     "register_plugin",
     "get_logger",
     # 基础类
@@ -114,6 +118,9 @@ __all__ = [
     # 装饰器
     "register_plugin",
     "ConfigField",
+    "ConfigSection",
+    "ConfigLayout",
+    "ConfigTab",
     # 工具函数
     "ManifestValidator",
     "get_logger",

@@ -1,5 +1,5 @@
 [inner]
-version = "1.7.7"
+version = "1.11.0"
 
 # 配置文件版本号迭代规则同bot_config.toml
 
@@ -46,7 +46,7 @@ name = "deepseek-v3"               # 模型名称（可随意命名，在后面�
 api_provider = "DeepSeek"          # API服务商名称（对应在api_providers中配置的服务商名称）
 price_in = 2.0                     # 输入价格（用于API调用统计，单位：元/ M token）（可选，若无该字段，默认值为0）
 price_out = 8.0                    # 输出价格（用于API调用统计，单位：元/ M token）（可选，若无该字段，默认值为0）
-#force_stream_mode = true          # 强制流式输出模式（若模型不支持非流式输出，请取消该注释，启用强制流式输出，若无该字段，默认值为false）
+# force_stream_mode = true          # 强制流式输出模式（若模型不支持非流式输出，请取消该注释，启用强制流式输出，若无该字段，默认值为false）
 
 [[models]]
 model_identifier = "deepseek-ai/DeepSeek-V3.2-Exp"
@@ -54,8 +54,11 @@ name = "siliconflow-deepseek-v3.2"
 api_provider = "SiliconFlow"
 price_in = 2.0
 price_out = 3.0
+# temperature = 0.5    # 可选：为该模型单独指定温度，会覆盖任务配置中的温度
+# max_tokens = 4096    # 可选：为该模型单独指定最大token数，会覆盖任务配置中的max_tokens
 [models.extra_params] # 可选的额外参数配置
 enable_thinking = false # 不启用思考
+
 
 [[models]]
 model_identifier = "deepseek-ai/DeepSeek-V3.2-Exp"
@@ -63,8 +66,36 @@ name = "siliconflow-deepseek-v3.2-think"
 api_provider = "SiliconFlow"    
 price_in = 2.0
 price_out = 3.0
+# temperature = 0.7    # 可选：为该模型单独指定温度，会覆盖任务配置中的温度
+# max_tokens = 4096    # 可选：为该模型单独指定最大token数，会覆盖任务配置中的max_tokens
 [models.extra_params] # 可选的额外参数配置
-enable_thinking = true # 不启用思考
+enable_thinking = true # 启用思考
+
+
+[[models]]
+model_identifier = "Qwen/Qwen3-Next-80B-A3B-Instruct"
+name = "qwen3-next-80b"
+api_provider = "SiliconFlow"    
+price_in = 1.0
+price_out = 4.0
+
+[[models]]
+model_identifier = "zai-org/GLM-4.6"
+name = "siliconflow-glm-4.6"
+api_provider = "SiliconFlow"    
+price_in = 3.5
+price_out = 14.0
+[models.extra_params] # 可选的额外参数配置
+enable_thinking = false # 不启用思考
+
+[[models]]
+model_identifier = "zai-org/GLM-4.6"
+name = "siliconflow-glm-4.6-think"
+api_provider = "SiliconFlow"    
+price_in = 3.5
+price_out = 14.0
+[models.extra_params] # 可选的额外参数配置
+enable_thinking = true # 启用思考
 
 [[models]]
 model_identifier = "deepseek-ai/DeepSeek-R1"
@@ -103,55 +134,64 @@ price_in = 0
 price_out = 0
 
 
+
 [model_task_config.utils] # 在麦麦的一些组件中使用的模型，例如表情包模块，取名模块，关系模块，麦麦的情绪变化等，是麦麦必须的模型
 model_list = ["siliconflow-deepseek-v3.2"] # 使用的模型列表，每个子项对应上面的模型名称(name)
 temperature = 0.2                        # 模型温度，新V3建议0.1-0.3
-max_tokens = 2048                         # 最大输出token数
+max_tokens = 4096                         # 最大输出token数
+slow_threshold = 15.0                     # 慢请求阈值（秒），模型等待回复时间超过此值会输出警告日志
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
-[model_task_config.utils_small] # 在麦麦的一些组件中使用的小模型，消耗量较大，建议使用速度较快的小模型
-model_list = ["qwen3-30b"]
+[model_task_config.tool_use] #功能模型，需要使用支持工具调用的模型，请使用较快的小模型（调用量较大）
+model_list = ["qwen3-30b","qwen3-next-80b"]
 temperature = 0.7
-max_tokens = 2048
+max_tokens = 1024
+slow_threshold = 10.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
-[model_task_config.tool_use] #工具调用模型，需要使用支持工具调用的模型
-model_list = ["qwen3-30b"]
-temperature = 0.7
-max_tokens = 800
-
-[model_task_config.replyer] # 首要回复模型，还用于表达器和表达方式学习
-model_list = ["siliconflow-deepseek-v3.2-think","siliconflow-deepseek-r1","siliconflow-deepseek-v3.2"]
+[model_task_config.replyer] # 首要回复模型，还用于表达方式学习
+model_list = ["siliconflow-deepseek-v3.2","siliconflow-deepseek-v3.2-think","siliconflow-glm-4.6","siliconflow-glm-4.6-think"]
 temperature = 0.3                        # 模型温度，新V3建议0.1-0.3
 max_tokens = 2048
+slow_threshold = 25.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
 [model_task_config.planner] #决策：负责决定麦麦该什么时候回复的模型
 model_list = ["siliconflow-deepseek-v3.2"]
 temperature = 0.3
 max_tokens = 800
+slow_threshold = 12.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
 [model_task_config.vlm] # 图像识别模型
 model_list = ["qwen3-vl-30"]
 max_tokens = 256
+slow_threshold = 15.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
 [model_task_config.voice] # 语音识别模型
 model_list = ["sensevoice-small"]
+slow_threshold = 12.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
-#嵌入模型
+# 嵌入模型
 [model_task_config.embedding]
 model_list = ["bge-m3"]
+slow_threshold = 5.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
-#------------LPMM知识库模型------------
+# ------------LPMM知识库模型------------
 
 [model_task_config.lpmm_entity_extract] # 实体提取模型
 model_list = ["siliconflow-deepseek-v3.2"]
 temperature = 0.2
 max_tokens = 800
+slow_threshold = 20.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）
 
 [model_task_config.lpmm_rdf_build] # RDF构建模型
 model_list = ["siliconflow-deepseek-v3.2"]
 temperature = 0.2
 max_tokens = 800
-
-[model_task_config.lpmm_qa] # 问答模型
-model_list = ["siliconflow-deepseek-v3.2"]
-temperature = 0.7
-max_tokens = 800
+slow_threshold = 20.0
+selection_strategy = "random"           # 模型选择策略：balance（负载均衡）或 random（随机选择）

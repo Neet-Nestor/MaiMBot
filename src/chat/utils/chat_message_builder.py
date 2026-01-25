@@ -2,7 +2,7 @@ import time
 import random
 import re
 
-from typing import List, Dict, Any, Tuple, Optional, Callable, Iterable
+from typing import List, Dict, Any, Tuple, Optional, Callable
 from rich.traceback import install
 
 from src.config.config import global_config
@@ -13,7 +13,7 @@ from src.common.data_models.message_data_model import MessageAndActionModel
 from src.common.database.database_model import ActionRecords
 from src.common.database.database_model import Images
 from src.person_info.person_info import Person, get_person_id
-from src.chat.utils.utils import translate_timestamp_to_human_readable, assign_message_ids
+from src.chat.utils.utils import translate_timestamp_to_human_readable, assign_message_ids, is_bot_self
 
 install(extra_lines=3)
 logger = get_logger("chat_message_builder")
@@ -43,12 +43,9 @@ def replace_user_references(
     if name_resolver is None:
 
         def default_resolver(platform: str, user_id: str) -> str:
-            # 检查是否是机器人自己（支持多平台）
-            if replace_bot_name:
-                if platform == "qq" and user_id == global_config.bot.qq_account:
-                    return f"{global_config.bot.nickname}(你)"
-                if platform == "telegram" and user_id == getattr(global_config.bot, "telegram_account", ""):
-                    return f"{global_config.bot.nickname}(你)"
+            # 检查是否是机器人自己（支持多平台，包括 WebUI）
+            if replace_bot_name and is_bot_self(platform, user_id):
+                return f"{global_config.bot.nickname}(你)"
             person = Person(platform=platform, user_id=user_id)
             return person.person_name or user_id  # type: ignore
 
@@ -61,8 +58,8 @@ def replace_user_references(
         aaa = match[1]
         bbb = match[2]
         try:
-            # 检查是否是机器人自己
-            if replace_bot_name and bbb == global_config.bot.qq_account:
+            # 检查是否是机器人自己（支持多平台，包括 WebUI）
+            if replace_bot_name and is_bot_self(platform, bbb):
                 reply_person_name = f"{global_config.bot.nickname}(你)"
             else:
                 reply_person_name = name_resolver(platform, bbb) or aaa
@@ -120,6 +117,7 @@ def get_raw_msg_by_timestamp_with_chat(
     limit_mode: str = "latest",
     filter_bot=False,
     filter_command=False,
+    filter_intercept_message_level: Optional[int] = None,
 ) -> List[DatabaseMessages]:
     """获取在特定聊天从指定时间戳到指定时间戳的消息，按时间升序排序，返回消息列表
     limit: 限制返回的消息数量，0为不限制
@@ -137,6 +135,7 @@ def get_raw_msg_by_timestamp_with_chat(
         limit_mode=limit_mode,
         filter_bot=filter_bot,
         filter_command=filter_command,
+        filter_intercept_message_level=filter_intercept_message_level,
     )
 
 
@@ -147,6 +146,8 @@ def get_raw_msg_by_timestamp_with_chat_inclusive(
     limit: int = 0,
     limit_mode: str = "latest",
     filter_bot=False,
+    filter_command=False,
+    filter_intercept_message_level: Optional[int] = None,
 ) -> List[DatabaseMessages]:
     """获取在特定聊天从指定时间戳到指定时间戳的消息（包含边界），按时间升序排序，返回消息列表
     limit: 限制返回的消息数量，0为不限制
@@ -157,7 +158,13 @@ def get_raw_msg_by_timestamp_with_chat_inclusive(
     sort_order = [("time", 1)] if limit == 0 else None
     # 直接将 limit_mode 传递给 find_messages
     return find_messages(
-        message_filter=filter_query, sort=sort_order, limit=limit, limit_mode=limit_mode, filter_bot=filter_bot
+        message_filter=filter_query,
+        sort=sort_order,
+        limit=limit,
+        limit_mode=limit_mode,
+        filter_bot=filter_bot,
+        filter_command=filter_command,
+        filter_intercept_message_level=filter_intercept_message_level,
     )
 
 
@@ -292,13 +299,20 @@ def get_raw_msg_before_timestamp(timestamp: float, limit: int = 0) -> List[Datab
     return find_messages(message_filter=filter_query, sort=sort_order, limit=limit)
 
 
-def get_raw_msg_before_timestamp_with_chat(chat_id: str, timestamp: float, limit: int = 0) -> List[DatabaseMessages]:
+def get_raw_msg_before_timestamp_with_chat(
+    chat_id: str, timestamp: float, limit: int = 0, filter_intercept_message_level: Optional[int] = None
+) -> List[DatabaseMessages]:
     """获取指定时间戳之前的消息，按时间升序排序，返回消息列表
     limit: 限制返回的消息数量，0为不限制
     """
     filter_query = {"chat_id": chat_id, "time": {"$lt": timestamp}}
     sort_order = [("time", 1)]
-    return find_messages(message_filter=filter_query, sort=sort_order, limit=limit)
+    return find_messages(
+        message_filter=filter_query,
+        sort=sort_order,
+        limit=limit,
+        filter_intercept_message_level=filter_intercept_message_level,
+    )
 
 
 def get_raw_msg_before_timestamp_with_users(
@@ -352,6 +366,8 @@ def _build_readable_messages_internal(
     pic_counter: int = 1,
     show_pic: bool = True,
     message_id_list: Optional[List[Tuple[str, DatabaseMessages]]] = None,
+    pic_single: bool = False,
+    long_time_notice: bool = False,
 ) -> Tuple[str, List[Tuple[float, str, str]], Dict[str, str], int]:
     # sourcery skip: use-getitem-for-re-match-groups
     """
@@ -378,6 +394,7 @@ def _build_readable_messages_internal(
     if pic_id_mapping is None:
         pic_id_mapping = {}
     current_pic_counter = pic_counter
+    pic_description_cache: Dict[str, str] = {}
 
     # 创建时间戳到消息ID的映射，用于在消息前添加[id]标识符
     timestamp_to_id_mapping: Dict[float, str] = {}
@@ -400,6 +417,17 @@ def _build_readable_messages_internal(
             nonlocal current_pic_counter
             nonlocal pic_counter
             pic_id = match.group(1)
+            if pic_single:
+                if pic_id not in pic_description_cache:
+                    description = "内容正在阅读，请稍等"
+                    try:
+                        image = Images.get_or_none(Images.image_id == pic_id)
+                        if image and image.description:
+                            description = image.description
+                    except Exception:
+                        pass
+                    pic_description_cache[pic_id] = description
+                return f"[图片：{pic_description_cache[pic_id]}]"
             if pic_id not in pic_id_mapping:
                 pic_id_mapping[pic_id] = f"图片{current_pic_counter}"
                 current_pic_counter += 1
@@ -437,14 +465,14 @@ def _build_readable_messages_internal(
         person_name = (
             person.person_name or f"{user_nickname}" or (f"昵称：{user_cardname}" if user_cardname else "某人")
         )
-        if replace_bot_name and (
-            (platform == global_config.bot.platform and user_id == global_config.bot.qq_account)
-            or (platform == "telegram" and user_id == getattr(global_config.bot, "telegram_account", ""))
-        ):
+        # 使用统一的 is_bot_self 函数判断是否是机器人自己（支持多平台，包括 WebUI）
+        if replace_bot_name and is_bot_self(platform, user_id):
             person_name = f"{global_config.bot.nickname}(你)"
 
         # 使用独立函数处理用户引用格式
         if content := replace_user_references(content, platform, replace_bot_name=replace_bot_name):
+            if getattr(message, "is_command", False):
+                content = f"[is_command=True] {content}"
             detailed_messages_raw.append((timestamp, person_name, content, False))
 
     if not detailed_messages_raw:
@@ -491,7 +519,30 @@ def _build_readable_messages_internal(
     # 3: 格式化为字符串
     output_lines: List[str] = []
 
+    prev_timestamp: Optional[float] = None
     for timestamp, name, content, is_action in detailed_message:
+        # 检查是否需要插入长时间间隔提示
+        if long_time_notice and prev_timestamp is not None:
+            time_diff = timestamp - prev_timestamp
+            time_diff_hours = time_diff / 3600
+            
+            # 检查是否跨天
+            prev_date = time.strftime("%Y-%m-%d", time.localtime(prev_timestamp))
+            current_date = time.strftime("%Y-%m-%d", time.localtime(timestamp))
+            is_cross_day = prev_date != current_date
+            
+            # 如果间隔大于8小时或跨天，插入提示
+            if time_diff_hours > 8 or is_cross_day:
+                # 格式化日期为中文格式：xxxx年xx月xx日（去掉前导零）
+                current_time_struct = time.localtime(timestamp)
+                year = current_time_struct.tm_year
+                month = current_time_struct.tm_mon
+                day = current_time_struct.tm_mday
+                date_str = f"{year}年{month}月{day}日"
+                hours_str = f"{int(time_diff_hours)}h"
+                notice = f"以下聊天开始时间：{date_str}。距离上一条消息过去了{hours_str}\n"
+                output_lines.append(notice)
+        
         readable_time = translate_timestamp_to_human_readable(timestamp, mode=timestamp_mode)
 
         # 查找消息id（如果有）并构建id_prefix
@@ -504,6 +555,8 @@ def _build_readable_messages_internal(
         else:
             output_lines.append(f"{id_prefix}{readable_time}, {name}: {content}")
         output_lines.append("\n")  # 在每个消息块后添加换行，保持可读性
+        
+        prev_timestamp = timestamp
 
     formatted_string = "".join(output_lines).strip()
 
@@ -568,7 +621,6 @@ def build_readable_actions(actions: List[DatabaseActionRecords], mode: str = "re
     output_lines = []
     current_time = time.time()
 
-
     for action in actions:
         action_time = action.time or current_time
         action_name = action.action_name or "未知动作"
@@ -595,7 +647,6 @@ def build_readable_actions(actions: List[DatabaseActionRecords], mode: str = "re
 
         line = f"{time_ago_str}，你使用了“{action_name}”，具体内容是：“{action_prompt_display}”"
         output_lines.append(line)
- 
 
     return "\n".join(output_lines)
 
@@ -605,6 +656,7 @@ async def build_readable_messages_with_list(
     replace_bot_name: bool = True,
     timestamp_mode: str = "relative",
     truncate: bool = False,
+    pic_single: bool = False,
 ) -> Tuple[str, List[Tuple[float, str, str]]]:
     """
     将消息列表转换为可读的文本格式，并返回原始(时间戳, 昵称, 内容)列表。
@@ -615,10 +667,17 @@ async def build_readable_messages_with_list(
         replace_bot_name,
         timestamp_mode,
         truncate,
+        pic_id_mapping=None,
+        pic_counter=1,
+        show_pic=True,
+        message_id_list=None,
+        pic_single=pic_single,
+        long_time_notice=False,
     )
 
-    if pic_mapping_info := build_pic_mapping_info(pic_id_mapping):
-        formatted_string = f"{pic_mapping_info}\n\n{formatted_string}"
+    if not pic_single:
+        if pic_mapping_info := build_pic_mapping_info(pic_id_mapping):
+            formatted_string = f"{pic_mapping_info}\n\n{formatted_string}"
 
     return formatted_string, details_list
 
@@ -632,6 +691,7 @@ def build_readable_messages_with_id(
     show_actions: bool = False,
     show_pic: bool = True,
     remove_emoji_stickers: bool = False,
+    pic_single: bool = False,
 ) -> Tuple[str, List[Tuple[str, DatabaseMessages]]]:
     """
     将消息列表转换为可读的文本格式，并返回原始(时间戳, 昵称, 内容)列表。
@@ -649,6 +709,7 @@ def build_readable_messages_with_id(
         read_mark=read_mark,
         message_id_list=message_id_list,
         remove_emoji_stickers=remove_emoji_stickers,
+        pic_single=pic_single,
     )
 
     return formatted_string, message_id_list
@@ -664,6 +725,8 @@ def build_readable_messages(
     show_pic: bool = True,
     message_id_list: Optional[List[Tuple[str, DatabaseMessages]]] = None,
     remove_emoji_stickers: bool = False,
+    pic_single: bool = False,
+    long_time_notice: bool = False,
 ) -> str:  # sourcery skip: extract-method
     """
     将消息列表转换为可读的文本格式。
@@ -674,11 +737,12 @@ def build_readable_messages(
         messages: 消息列表
         replace_bot_name: 是否替换机器人名称为"你"
         merge_messages: 是否合并连续消息
-        timestamp_mode: 时间戳显示模式
+        timestamp_mode: 时间戳显示模式，"normal"或"normal_no_YMD"或"relative"
         read_mark: 已读标记时间戳
         truncate: 是否截断长消息
         show_actions: 是否显示动作记录
         remove_emoji_stickers: 是否移除表情包并过滤空消息
+        long_time_notice: 是否在消息间隔过长（>8小时）或跨天时插入时间提示
     """
     # WIP HERE and BELOW ----------------------------------------------
     # 创建messages的深拷贝，避免修改原始列表
@@ -771,14 +835,15 @@ def build_readable_messages(
             truncate,
             show_pic=show_pic,
             message_id_list=message_id_list,
+            pic_single=pic_single,
+            long_time_notice=long_time_notice,
         )
 
-        # 生成图片映射信息并添加到最前面
-        pic_mapping_info = build_pic_mapping_info(pic_id_mapping)
-        if pic_mapping_info:
-            return f"{pic_mapping_info}\n\n{formatted_string}"
-        else:
-            return formatted_string
+        if not pic_single:
+            pic_mapping_info = build_pic_mapping_info(pic_id_mapping)
+            if pic_mapping_info:
+                return f"{pic_mapping_info}\n\n{formatted_string}"
+        return formatted_string
     else:
         # 按 read_mark 分割消息
         messages_before_mark = [msg for msg in copy_messages if (msg.time or 0) <= read_mark]
@@ -798,6 +863,8 @@ def build_readable_messages(
             pic_counter,
             show_pic=show_pic,
             message_id_list=message_id_list,
+            pic_single=pic_single,
+            long_time_notice=long_time_notice,
         )
         formatted_after, _, pic_id_mapping, _ = _build_readable_messages_internal(
             messages_after_mark,
@@ -808,15 +875,20 @@ def build_readable_messages(
             pic_counter,
             show_pic=show_pic,
             message_id_list=message_id_list,
+            pic_single=pic_single,
+            long_time_notice=long_time_notice,
         )
 
         read_mark_line = "\n--- 以上消息是你已经看过，请关注以下未读的新消息---\n"
 
         # 生成图片映射信息
-        if pic_id_mapping:
-            pic_mapping_info = f"图片信息：\n{build_pic_mapping_info(pic_id_mapping)}\n聊天记录信息：\n"
+        if not pic_single:
+            if pic_id_mapping:
+                pic_mapping_info = f"图片信息：\n{build_pic_mapping_info(pic_id_mapping)}\n聊天记录信息：\n"
+            else:
+                pic_mapping_info = "聊天记录信息：\n"
         else:
-            pic_mapping_info = "聊天记录信息：\n"
+            pic_mapping_info = ""
 
         # 组合结果
         result_parts = []
@@ -834,7 +906,7 @@ def build_readable_messages(
         return "".join(result_parts)
 
 
-async def build_anonymous_messages(messages: List[DatabaseMessages]) -> str:
+async def build_anonymous_messages(messages: List[DatabaseMessages], show_ids: bool = False) -> str:
     """
     构建匿名可读消息，将不同人的名称转为唯一占位符（A、B、C...），bot自己用SELF。
     处理 回复<aaa:bbb> 和 @<aaa:bbb> 字段，将bbb映射为匿名占位符。
@@ -891,7 +963,7 @@ async def build_anonymous_messages(messages: List[DatabaseMessages]) -> str:
             current_char += 1
         return person_map[person_id]
 
-    for msg in messages:
+    for i, msg in enumerate(messages):
         try:
             platform = msg.chat_info.platform
             user_id = msg.user_info.user_id
@@ -912,7 +984,12 @@ async def build_anonymous_messages(messages: List[DatabaseMessages]) -> str:
 
             content = replace_user_references(content, platform, anon_name_resolver, replace_bot_name=False)
 
-            header = f"{anon_name}说 "
+            # 构建消息头，如果启用show_ids则添加序号
+            if show_ids:
+                header = f"[{i + 1}] {anon_name}说 "
+            else:
+                header = f"{anon_name}说 "
+
             output_lines.append(header)
             stripped_line = content.strip()
             if stripped_line:
@@ -934,7 +1011,6 @@ async def build_anonymous_messages(messages: List[DatabaseMessages]) -> str:
     final_output_lines.extend(output_lines)
     formatted_string = "".join(final_output_lines).strip()
     return formatted_string
-
 
 
 async def get_person_id_list(messages: List[Dict[str, Any]]) -> List[str]:

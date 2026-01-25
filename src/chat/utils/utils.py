@@ -4,14 +4,13 @@ import time
 import jieba
 import json
 import ast
-import numpy as np
+import os
+from datetime import datetime
 
-from collections import Counter
 from typing import Optional, Tuple, List, TYPE_CHECKING
 
 from src.common.logger import get_logger
 from src.common.data_models.database_data_model import DatabaseMessages
-from src.common.message_repository import find_messages, count_messages
 from src.config.config import global_config, model_config
 from src.chat.message_receive.message import MessageRecv
 from src.chat.message_receive.chat_stream import get_chat_manager
@@ -32,10 +31,10 @@ def is_english_letter(char: str) -> bool:
 
 def parse_platform_accounts(platforms: list[str]) -> dict[str, str]:
     """解析 platforms 列表，返回平台到账号的映射
-    
+
     Args:
         platforms: 格式为 ["platform:account"] 的列表，如 ["tg:123456789", "wx:wxid123"]
-    
+
     Returns:
         字典，键为平台名，值为账号
     """
@@ -49,12 +48,12 @@ def parse_platform_accounts(platforms: list[str]) -> dict[str, str]:
 
 def get_current_platform_account(platform: str, platform_accounts: dict[str, str], qq_account: str) -> str:
     """根据当前平台获取对应的账号
-    
+
     Args:
         platform: 当前消息的平台
         platform_accounts: 从 platforms 列表解析的平台账号映射
         qq_account: QQ 账号（兼容旧配置）
-    
+
     Returns:
         当前平台对应的账号
     """
@@ -68,16 +67,63 @@ def get_current_platform_account(platform: str, platform_accounts: dict[str, str
         return platform_accounts.get(platform, "")
 
 
+def is_bot_self(platform: str, user_id: str) -> bool:
+    """判断给定的平台和用户ID是否是机器人自己
+
+    这个函数统一处理所有平台（包括 QQ、Telegram、WebUI 等）的机器人识别逻辑。
+
+    Args:
+        platform: 消息平台（如 "qq", "telegram", "webui" 等）
+        user_id: 用户ID
+
+    Returns:
+        bool: 如果是机器人自己则返回 True，否则返回 False
+    """
+    if not platform or not user_id:
+        return False
+
+    # 将 user_id 转为字符串进行比较
+    user_id_str = str(user_id)
+
+    # 获取机器人的 QQ 账号（主账号）
+    qq_account = str(global_config.bot.qq_account or "")
+
+    # QQ 平台：直接比较 QQ 账号
+    if platform == "qq":
+        return user_id_str == qq_account
+
+    # WebUI 平台：机器人回复时使用的是 QQ 账号，所以也比较 QQ 账号
+    if platform == "webui":
+        return user_id_str == qq_account
+
+    # 获取各平台账号映射
+    platforms_list = getattr(global_config.bot, "platforms", []) or []
+    platform_accounts = parse_platform_accounts(platforms_list)
+
+    # Telegram 平台
+    if platform == "telegram":
+        tg_account = platform_accounts.get("tg", "") or platform_accounts.get("telegram", "")
+        return user_id_str == tg_account if tg_account else False
+
+    # 其他平台：尝试从 platforms 配置中查找
+    platform_account = platform_accounts.get(platform, "")
+    if platform_account:
+        return user_id_str == platform_account
+
+    # 默认情况：与主 QQ 账号比较（兼容性）
+    return user_id_str == qq_account
+
+
 def is_mentioned_bot_in_message(message: MessageRecv) -> tuple[bool, bool, float]:
     """检查消息是否提到了机器人（统一多平台实现）"""
     text = message.processed_plain_text or ""
     platform = getattr(message.message_info, "platform", "") or ""
-    
+
     # 获取各平台账号
     platforms_list = getattr(global_config.bot, "platforms", []) or []
     platform_accounts = parse_platform_accounts(platforms_list)
     qq_account = str(getattr(global_config.bot, "qq_account", "") or "")
-    
+
     # 获取当前平台对应的账号
     current_account = get_current_platform_account(platform, platform_accounts, qq_account)
 
@@ -146,7 +192,9 @@ def is_mentioned_bot_in_message(message: MessageRecv) -> tuple[bool, bool, float
         elif current_account:
             if re.search(rf"\[回复 (.+?)\({re.escape(current_account)}\)：(.+?)\]，说：", text):
                 is_mentioned = True
-            elif re.search(rf"\[回复<(.+?)(?=:{re.escape(current_account)}>)\:{re.escape(current_account)}>：(.+?)\]，说：", text):
+            elif re.search(
+                rf"\[回复<(.+?)(?=:{re.escape(current_account)}>)\:{re.escape(current_account)}>：(.+?)\]，说：", text
+            ):
                 is_mentioned = True
 
     # 6) 名称/别名 提及（去除 @/回复标记后再匹配）
@@ -185,7 +233,6 @@ async def get_embedding(text, request_type="embedding") -> Optional[List[float]]
     return embedding
 
 
-
 def split_into_sentences_w_remove_punctuation(text: str) -> list[str]:
     """将文本分割成句子，并根据概率合并
     1. 识别分割点（, ， 。 ; 空格），但如果分割点左右都是英文字母则不分割。
@@ -198,21 +245,54 @@ def split_into_sentences_w_remove_punctuation(text: str) -> list[str]:
         List[str]: 分割和合并后的句子列表
     """
     # 预处理：处理多余的换行符
-    # 1. 将连续的换行符替换为单个换行符
+    # 1. 将连续的换行符替换为单个换行符（保留换行符用于分割）
     text = re.sub(r"\n\s*\n+", "\n", text)
-    # 2. 处理换行符和其他分隔符的组合
-    text = re.sub(r"\n\s*([，,。;\s])", r"\1", text)
-    text = re.sub(r"([，,。;\s])\s*\n", r"\1", text)
+    # 2. 处理换行符和其他分隔符的组合（保留换行符，删除其他分隔符）
+    text = re.sub(r"\n\s*([，,。;\s])", r"\n\1", text)
+    text = re.sub(r"([，,。;\s])\s*\n", r"\1\n", text)
 
-    # 处理两个汉字中间的换行符
-    text = re.sub(r"([\u4e00-\u9fff])\n([\u4e00-\u9fff])", r"\1。\2", text)
+    # 处理两个汉字中间的换行符（保留换行符，不替换为句号，让换行符强制分割）
+    # text = re.sub(r"([\u4e00-\u9fff])\n([\u4e00-\u9fff])", r"\1。\2", text)  # 注释掉，保留换行符用于分割
 
     len_text = len(text)
     if len_text < 3:
         return list(text) if random.random() < 0.01 else [text]
 
-    # 定义分隔符
-    separators = {"，", ",", " ", "。", ";"}
+    # 先标记哪些位置位于成对引号内部，避免在引号内部进行句子分割
+    # 支持的引号包括：中英文单/双引号和常见中文书名号/引号
+    quote_chars = {
+        '"',
+        "'",
+        "“",
+        "”",
+        "‘",
+        "’",
+        "「",
+        "」",
+        "『",
+        "』",
+    }
+    inside_quote = [False] * len_text
+    in_quote = False
+    current_quote_char = ""
+    for idx, ch in enumerate(text):
+        if ch in quote_chars:
+            # 遇到引号时切换状态（英文引号本身开闭相同，用同一个字符表示）
+            if not in_quote:
+                in_quote = True
+                current_quote_char = ch
+                inside_quote[idx] = False
+            else:
+                # 只有遇到同一类引号才视为关闭
+                if ch == current_quote_char or ch in {'"', "'"} and current_quote_char in {'"', "'"}:
+                    in_quote = False
+                    current_quote_char = ""
+                inside_quote[idx] = False
+        else:
+            inside_quote[idx] = in_quote
+
+    # 定义分隔符（包含换行符）
+    separators = {"，", ",", " ", "。", ";", "\n"}
     segments = []
     current_segment = ""
 
@@ -221,21 +301,42 @@ def split_into_sentences_w_remove_punctuation(text: str) -> list[str]:
     while i < len(text):
         char = text[i]
         if char in separators:
-            # 检查分割条件：如果分隔符左右都是英文字母，则不分割
-            can_split = True
-            if 0 < i < len(text) - 1:
-                prev_char = text[i - 1]
-                next_char = text[i + 1]
-                # if is_english_letter(prev_char) and is_english_letter(next_char) and char == ' ': # 原计划只对空格应用此规则，现应用于所有分隔符
-                if is_english_letter(prev_char) and is_english_letter(next_char):
-                    can_split = False
+            # 引号内部一律不作为分割点（包括换行）
+            if inside_quote[i]:
+                can_split = False
+            else:
+                # 换行符在不在引号内时都强制分割
+                if char == "\n":
+                    can_split = True
+                else:
+                    # 检查分割条件
+                    can_split = True
+                    # 检查分隔符左右是否有冒号（中英文），如果有则不分割
+                    if i > 0:
+                        prev_char = text[i - 1]
+                        if prev_char in {":", "："}:
+                            can_split = False
+                    if i < len(text) - 1:
+                        next_char = text[i + 1]
+                        if next_char in {":", "："}:
+                            can_split = False
+
+                    # 如果左右没有冒号，再检查空格的特殊情况
+                    if can_split and char == " " and i > 0 and i < len(text) - 1:
+                        prev_char = text[i - 1]
+                        next_char = text[i + 1]
+                        # 不分割数字和数字、数字和英文、英文和数字、英文和英文之间的空格
+                        prev_is_alnum = prev_char.isdigit() or is_english_letter(prev_char)
+                        next_is_alnum = next_char.isdigit() or is_english_letter(next_char)
+                        if prev_is_alnum and next_is_alnum:
+                            can_split = False
 
             if can_split:
                 # 只有当当前段不为空时才添加
                 if current_segment:
                     segments.append((current_segment, char))
-                # 如果当前段为空，但分隔符是空格，则也添加一个空段（保留空格）
-                elif char == " ":
+                # 如果当前段为空，但分隔符是空格或换行符，则也添加一个空段（保留分隔符）
+                elif char in {" ", "\n"}:
                     segments.append(("", char))
                 current_segment = ""
             else:
@@ -328,6 +429,20 @@ def random_remove_punctuation(text: str) -> str:
     return result
 
 
+def _get_random_default_reply() -> str:
+    """获取随机默认回复"""
+    default_replies = [
+        f"{global_config.bot.nickname}不知道哦",
+        f"{global_config.bot.nickname}不知道",
+        "不知道哦",
+        "不知道",
+        "不晓得",
+        "懒得说",
+        "()",
+    ]
+    return random.choice(default_replies)
+
+
 def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese_typo: bool = True) -> list[str]:
     if not global_config.response_post_process.enable_response_post_process:
         return [text]
@@ -356,7 +471,7 @@ def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese
     # 如果基本上是中文，则进行长度过滤
     if get_western_ratio(cleaned_text) < 0.1 and len(cleaned_text) > max_length:
         logger.warning(f"回复过长 ({len(cleaned_text)} 字符)，返回默认回复")
-        return ["懒得说"]
+        return [_get_random_default_reply()]
 
     typo_generator = ChineseTypoGenerator(
         error_rate=global_config.chinese_typo.error_rate,
@@ -374,15 +489,26 @@ def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese
     for sentence in split_sentences:
         if global_config.chinese_typo.enable and enable_chinese_typo:
             typoed_text, typo_corrections = typo_generator.create_typo_sentence(sentence)
-            sentences.append(typoed_text)
             if typo_corrections:
-                sentences.append(typo_corrections)
+                # 50%概率新增正确字/词，50%概率用正确分句替换错别字分句
+                if random.random() < 0.5:
+                    sentences.append(typoed_text)
+                    sentences.append(typo_corrections)
+                else:
+                    # 用正确的分句替换错别字分句
+                    sentences.append(sentence)
+            else:
+                sentences.append(typoed_text)
         else:
             sentences.append(sentence)
 
     if len(sentences) > max_sentence_num:
-        logger.warning(f"分割后消息数量过多 ({len(sentences)} 条)，返回默认回复")
-        return [f"{global_config.bot.nickname}不知道哦"]
+        if global_config.response_splitter.enable_overflow_return_all:
+            logger.warning(f"分割后消息数量过多 ({len(sentences)} 条)，直接返回原文")
+            sentences = [cleaned_text]
+        else:
+            logger.warning(f"分割后消息数量过多 ({len(sentences)} 条)，返回默认回复")
+            return [_get_random_default_reply()]
 
     # if extracted_contents:
     #     for content in extracted_contents:
@@ -439,7 +565,6 @@ def calculate_typing_time(
     # print(f"{total_time}")
 
     return total_time  # 加上回车时间
-
 
 
 def truncate_message(message: str, max_length=20) -> str:
@@ -516,7 +641,6 @@ def get_western_ratio(paragraph):
 
     western_count = sum(bool(is_english_letter(char)) for char in alnum_chars)
     return western_count / len(alnum_chars)
-
 
 
 def translate_timestamp_to_human_readable(timestamp: float, mode: str = "normal") -> str:
@@ -615,6 +739,42 @@ def get_chat_type_and_target_info(chat_id: str) -> Tuple[bool, Optional["TargetP
         logger.error(f"获取聊天类型和目标信息时出错 for {chat_id}: {e}", exc_info=True)
 
     return is_group_chat, chat_target_info
+
+
+def record_replyer_action_temp(chat_id: str, reason: str, think_level: int) -> None:
+    """
+    临时记录replyer动作被选择的信息（仅群聊）
+
+    Args:
+        chat_id: 聊天ID
+        reason: 选择理由
+        think_level: 思考深度等级
+    """
+    try:
+        # 确保data/temp目录存在
+        temp_dir = "data/temp"
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # 创建记录数据
+        record_data = {
+            "chat_id": chat_id,
+            "reason": reason,
+            "think_level": think_level,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # 生成文件名（使用时间戳避免冲突）
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"replyer_action_{timestamp_str}.json"
+        filepath = os.path.join(temp_dir, filename)
+
+        # 写入文件
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(record_data, f, ensure_ascii=False, indent=2)
+
+        logger.debug(f"已记录replyer动作选择: chat_id={chat_id}, think_level={think_level}")
+    except Exception as e:
+        logger.warning(f"记录replyer动作选择失败: {e}")
 
 
 def assign_message_ids(messages: List[DatabaseMessages]) -> List[Tuple[str, DatabaseMessages]]:

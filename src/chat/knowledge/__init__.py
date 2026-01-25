@@ -31,6 +31,10 @@ qa_manager = None
 inspire_manager = None
 
 
+def get_qa_manager():
+    return qa_manager
+
+
 def lpmm_start_up():  # sourcery skip: extract-duplicate-method
     # 检查LPMM知识库是否启用
     if global_config.lpmm_knowledge.enable:
@@ -38,7 +42,10 @@ def lpmm_start_up():  # sourcery skip: extract-duplicate-method
         logger.info("创建LLM客户端")
 
         # 初始化Embedding库
-        embed_manager = EmbeddingManager()
+        embed_manager = EmbeddingManager(
+            max_workers=global_config.lpmm_knowledge.max_embedding_workers,
+            chunk_size=global_config.lpmm_knowledge.embedding_chunk_size,
+        )
         logger.info("正在从文件加载Embedding库")
         try:
             embed_manager.load_from_file()

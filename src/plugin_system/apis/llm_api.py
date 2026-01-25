@@ -7,9 +7,11 @@
     success, response, reasoning, model_name = await llm_api.generate_with_model(prompt, model_config)
 """
 
-from typing import Tuple, Dict, List, Any, Optional
+from typing import Tuple, Dict, List, Any, Optional, Callable
 from src.common.logger import get_logger
 from src.llm_models.payload_content.tool_option import ToolCall
+from src.llm_models.payload_content.message import Message
+from src.llm_models.model_client.base_client import BaseClient
 from src.llm_models.utils_model import LLMRequest
 from src.config.config import model_config
 from src.config.api_ada_configs import TaskConfig
@@ -106,13 +108,54 @@ async def generate_with_model_with_tools(
     """
     try:
         model_name_list = model_config.model_list
-        logger.info(f"[LLMAPI] 使用模型集合 {model_name_list} 生成内容")
-        logger.debug(f"[LLMAPI] 完整提示词: {prompt}")
+        logger.info(f"使用模型{model_name_list}生成内容")
+        logger.debug(f"完整提示词: {prompt}")
 
         llm_request = LLMRequest(model_set=model_config, request_type=request_type)
 
         response, (reasoning_content, model_name, tool_call) = await llm_request.generate_response_async(
             prompt, tools=tool_options, temperature=temperature, max_tokens=max_tokens
+        )
+        return True, response, reasoning_content, model_name, tool_call
+
+    except Exception as e:
+        error_msg = f"生成内容时出错: {str(e)}"
+        logger.error(f"[LLMAPI] {error_msg}")
+        return False, error_msg, "", "", None
+
+
+async def generate_with_model_with_tools_by_message_factory(
+    message_factory: Callable[[BaseClient], List[Message]],
+    model_config: TaskConfig,
+    tool_options: List[Dict[str, Any]] | None = None,
+    request_type: str = "plugin.generate",
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> Tuple[bool, str, str, str, List[ToolCall] | None]:
+    """使用指定模型和工具生成内容（通过消息工厂构建消息列表）
+
+    Args:
+        message_factory: 消息工厂函数
+        model_config: 模型配置
+        tool_options: 工具选项列表
+        request_type: 请求类型标识
+        temperature: 温度参数
+        max_tokens: 最大token数
+
+    Returns:
+        Tuple[bool, str, str, str, List[ToolCall] | None]: (是否成功, 生成的内容, 推理过程, 模型名称, 工具调用列表)
+    """
+    try:
+        model_name_list = model_config.model_list
+        logger.info(f"使用模型 {model_name_list} 生成内容")
+
+        llm_request = LLMRequest(model_set=model_config, request_type=request_type)
+
+        response, (reasoning_content, model_name, tool_call) = await llm_request.generate_response_with_message_async(
+            message_factory=message_factory,
+            tools=tool_options,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         return True, response, reasoning_content, model_name, tool_call
 

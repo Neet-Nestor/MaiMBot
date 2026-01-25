@@ -21,6 +21,8 @@ class MessageAndActionModel(BaseDataModel):
     chat_info_platform: str = field(default_factory=str)
     is_action_record: bool = field(default=False)
     action_name: Optional[str] = None
+    is_command: bool = field(default=False)
+    intercept_message_level: int = field(default=0)
 
     @classmethod
     def from_DatabaseMessages(cls, message: "DatabaseMessages"):
@@ -34,6 +36,8 @@ class MessageAndActionModel(BaseDataModel):
             processed_plain_text=message.processed_plain_text,
             display_message=message.display_message,
             chat_info_platform=message.chat_info.platform,
+            is_command=message.is_command,
+            intercept_message_level=getattr(message, "intercept_message_level", 0),
         )
 
 

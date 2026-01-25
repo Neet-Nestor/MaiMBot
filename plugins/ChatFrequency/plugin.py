@@ -1,15 +1,11 @@
 from typing import List, Tuple, Type, Optional
-from src.plugin_system import (
-    BasePlugin,
-    register_plugin,
-    BaseCommand,
-    ComponentInfo,
-    ConfigField
-)
+from src.plugin_system import BasePlugin, register_plugin, BaseCommand, ComponentInfo, ConfigField
 from src.plugin_system.apis import send_api, frequency_api
+
 
 class SetTalkFrequencyCommand(BaseCommand):
     """设置当前聊天的talk_frequency值"""
+
     command_name = "set_talk_frequency"
     command_description = "设置当前聊天的talk_frequency值：/chat talk_frequency <数字> 或 /chat t <数字>"
     command_pattern = r"^/chat\s+(?:talk_frequency|t)\s+(?P<value>[+-]?\d*\.?\d+)$"
@@ -19,35 +15,35 @@ class SetTalkFrequencyCommand(BaseCommand):
             # 获取命令参数 - 使用命名捕获组
             if not self.matched_groups or "value" not in self.matched_groups:
                 return False, "命令格式错误", False
-            
+
             value_str = self.matched_groups["value"]
             if not value_str:
                 return False, "无法获取数值参数", False
-            
+
             value = float(value_str)
-            
+
             # 获取聊天流ID
             if not self.message.chat_stream or not hasattr(self.message.chat_stream, "stream_id"):
                 return False, "无法获取聊天流信息", False
-            
+
             chat_id = self.message.chat_stream.stream_id
-            
+
             # 设置talk_frequency
             frequency_api.set_talk_frequency_adjust(chat_id, value)
-            
+
             final_value = frequency_api.get_current_talk_value(chat_id)
             adjust_value = frequency_api.get_talk_frequency_adjust(chat_id)
             base_value = final_value / adjust_value
-            
+
             # 发送反馈消息（不保存到数据库）
             await send_api.text_to_stream(
                 f"已设置当前聊天的talk_frequency调整值为: {value}\n当前talk_value: {final_value:.2f}\n发言频率调整: {adjust_value:.2f}\n基础值: {base_value:.2f}",
                 chat_id,
-                storage_message=False
+                storage_message=False,
             )
-            
+
             return True, None, False
-            
+
         except ValueError:
             error_msg = "数值格式错误，请输入有效的数字"
             await self.send_text(error_msg, storage_message=False)
@@ -60,6 +56,7 @@ class SetTalkFrequencyCommand(BaseCommand):
 
 class ShowFrequencyCommand(BaseCommand):
     """显示当前聊天的频率控制状态"""
+
     command_name = "show_frequency"
     command_description = "显示当前聊天的频率控制状态：/chat show 或 /chat s"
     command_pattern = r"^/chat\s+(?:show|s)$"
@@ -116,11 +113,7 @@ class BetterFrequencyPlugin(BasePlugin):
     config_file_name: str = "config.toml"
 
     # 配置节描述
-    config_section_descriptions = {
-        "plugin": "插件基本信息",
-        "frequency": "频率控制配置",
-        "features": "功能开关配置"
-    }
+    config_section_descriptions = {"plugin": "插件基本信息", "frequency": "频率控制配置", "features": "功能开关配置"}
 
     # 配置Schema定义
     config_schema: dict = {
@@ -138,13 +131,14 @@ class BetterFrequencyPlugin(BasePlugin):
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         components = []
-        
+
         # 根据配置决定是否注册命令组件
         if self.config.get("features", {}).get("enable_commands", True):
-            components.extend([
-                (SetTalkFrequencyCommand.get_command_info(), SetTalkFrequencyCommand),
-                (ShowFrequencyCommand.get_command_info(), ShowFrequencyCommand),
-            ])
-        
-        
+            components.extend(
+                [
+                    (SetTalkFrequencyCommand.get_command_info(), SetTalkFrequencyCommand),
+                    (ShowFrequencyCommand.get_command_info(), ShowFrequencyCommand),
+                ]
+            )
+
         return components

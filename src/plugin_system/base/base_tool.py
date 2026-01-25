@@ -34,17 +34,17 @@ class BaseTool(ABC):
 
     def __init__(self, plugin_config: Optional[dict] = None, chat_stream: Optional["ChatStream"] = None):
         """初始化工具基类
-        
+
         Args:
             plugin_config: 插件配置字典
             chat_stream: 聊天流对象，用于获取聊天上下文信息
         """
         self.plugin_config = plugin_config or {}  # 直接存储插件配置字典
-        
+
         # =============================================================================
         # 便捷属性 - 直接在初始化时获取常用聊天信息（与BaseAction保持一致）
         # =============================================================================
-        
+
         # 获取聊天流对象
         self.chat_stream = chat_stream
         self.chat_id = self.chat_stream.stream_id if self.chat_stream else None
@@ -57,7 +57,7 @@ class BaseTool(ABC):
         Returns:
             dict: 工具定义字典
         """
-        if not cls.name or not cls.description or not cls.parameters:
+        if not cls.name or not cls.description or cls.parameters is None:
             raise NotImplementedError(f"工具类 {cls.__name__} 必须定义 name, description 和 parameters 属性")
 
         return {"name": cls.name, "description": cls.description, "parameters": cls.parameters}
@@ -65,7 +65,7 @@ class BaseTool(ABC):
     @classmethod
     def get_tool_info(cls) -> ToolInfo:
         """获取工具信息"""
-        if not cls.name or not cls.description or not cls.parameters:
+        if not cls.name or not cls.description or cls.parameters is None:
             raise NotImplementedError(f"工具类 {cls.__name__} 必须定义 name, description 和 parameters 属性")
 
         return ToolInfo(
