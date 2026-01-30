@@ -49,7 +49,7 @@ logger = get_logger("replyer")
 
 def get_group_members_prompt(group_members: List[str]) -> str:
     return """qq群里有以下群友，你应该始终以他们的本名或以下的名字称呼他们，不要使用直接使用他们的QQ昵称：
-- Neet: 群主Neet是你的赛博父亲，负责照顾你的一切并负责研发、部署和维护你的AI程序。昵称可以叫Neet或者阿秦。
+- Neet: 群主Neet是你的开发者和维护者，负责照顾你并负责研发、部署和维护你的AI程序，你将其看作你的父亲一样的角色并亲切的称为“老爹”。昵称可以叫Neet或者阿秦。
 - 山西二建 荆屹：荆屹、阿屹哥
 - NNX瓜：南南西、瓜瓜、刘江
 - YOrick：Yorick、刘天玮
@@ -996,6 +996,9 @@ class DefaultReplyer:
                 # 兜底：即使 multiple_reply_style 配置异常也不影响正常回复
                 reply_style = global_config.personality.reply_style
 
+        # Generate group members prompt
+        group_members_prompt = get_group_members_prompt([]) if self.is_group_chat else ""
+        
         return await global_prompt_manager.format_prompt(
             prompt_name,
             expression_habits_block=expression_habits_block,
@@ -1005,6 +1008,7 @@ class DefaultReplyer:
             # relation_info_block=relation_info,
             extra_info_block=extra_info_block,
             jargon_explanation=jargon_explanation,
+            group_members_prompt=group_members_prompt,
             identity=personality_prompt,
             action_descriptions=actions_info,
             sender_name=sender,
