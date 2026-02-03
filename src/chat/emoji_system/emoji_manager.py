@@ -8,6 +8,8 @@ import traceback
 import io
 import re
 import binascii
+import gc
+import resource
 
 from typing import Optional, Tuple, List, Any
 from PIL import Image
@@ -84,9 +86,15 @@ class MaiEmoji:
             # 获取图片格式
             logger.debug(f"[初始化] 正在使用Pillow获取格式: {self.filename}")
             try:
-                with Image.open(io.BytesIO(image_bytes)) as img:
-                    self.format = img.format.lower()  # type: ignore
-                logger.debug(f"[初始化] 格式获取成功: {self.format}")
+                # 使用BytesIO创建图像对象，确保正确关闭
+                image_io = io.BytesIO(image_bytes)
+                try:
+                    with Image.open(image_io) as img:
+                        self.format = img.format.lower()  # type: ignore
+                    logger.debug(f"[初始化] 格式获取成功: {self.format}")
+                finally:
+                    # 确保BytesIO对象被关闭
+                    image_io.close()
             except Exception as pil_error:
                 logger.error(f"[初始化错误] Pillow无法处理图片 ({self.filename}): {pil_error}")
                 logger.error(traceback.format_exc())
@@ -133,7 +141,10 @@ class MaiEmoji:
             try:
                 # 如果目标文件已存在，先删除 (确保移动成功)
                 if os.path.exists(destination_full_path):
-                    os.remove(destination_full_path)
+                    success = await _safe_remove_file(destination_full_path)
+                    if not success:
+                        logger.error(f"[错误] 无法删除已存在的目标文件: {destination_full_path}")
+                        return False
 
                 os.rename(source_full_path, destination_full_path)
                 logger.debug(f"[移动] 文件从 {source_full_path} 移动到 {destination_full_path}")
@@ -191,11 +202,11 @@ class MaiEmoji:
             # 1. 删除文件
             file_to_delete = self.full_path
             if os.path.exists(file_to_delete):
-                try:
-                    os.remove(file_to_delete)
+                success = await _safe_remove_file(file_to_delete)
+                if success:
                     logger.debug(f"[删除] 文件: {file_to_delete}")
-                except Exception as e:
-                    logger.error(f"[错误] 删除文件失败 {file_to_delete}: {str(e)}")
+                else:
+                    logger.error(f"[错误] 删除文件失败: {file_to_delete}")
                     # 文件删除失败，但仍然尝试删除数据库记录
 
             # 2. 删除数据库记录
@@ -301,6 +312,97 @@ def _ensure_emoji_dir() -> None:
     os.makedirs(EMOJI_REGISTERED_DIR, exist_ok=True)
 
 
+def _get_open_files_count() -> int:
+    """获取当前进程打开的文件描述符数量"""
+    try:
+        # 在macOS和Linux上获取当前进程的资源使用情况
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0] - len(os.listdir('/dev/fd'))
+    except:
+        # 如果获取失败，返回一个保守的估计值
+        return 0
+
+
+def _monitor_file_descriptors(operation_name: str = "") -> None:
+    """监控文件描述符使用情况"""
+    try:
+        soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # 尝试获取当前使用的文件描述符数量
+        try:
+            current_usage = len(os.listdir('/dev/fd'))
+        except:
+            current_usage = 0
+            
+        usage_percentage = (current_usage / soft_limit) * 100 if soft_limit > 0 else 0
+        
+        if usage_percentage > 80:  # 如果使用率超过80%，记录警告
+            logger.warning(f"[文件描述符警告] {operation_name} - 使用率: {usage_percentage:.1f}% ({current_usage}/{soft_limit})")
+            # 强制垃圾回收
+            gc.collect()
+        elif usage_percentage > 50:  # 如果使用率超过50%，记录信息
+            logger.info(f"[文件描述符监控] {operation_name} - 使用率: {usage_percentage:.1f}% ({current_usage}/{soft_limit})")
+    except Exception as e:
+        logger.debug(f"[监控] 文件描述符监控失败: {e}")
+
+
+def _safe_listdir(directory_path: str) -> list:
+    """安全地列出目录内容，处理文件描述符泄漏问题"""
+    max_retries = 3
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            # 在每次尝试前强制垃圾回收
+            if attempt > 0:
+                gc.collect()
+                
+            return os.listdir(directory_path)
+        except OSError as e:
+            if e.errno == 24:  # Too many open files
+                logger.warning(f"[警告] 文件描述符不足，尝试重试 ({attempt + 1}/{max_retries}): {e}")
+                _monitor_file_descriptors(f"listdir重试{attempt + 1}")
+                
+                if attempt < max_retries - 1:
+                    # 强制垃圾回收和短暂休眠
+                    gc.collect()
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                    continue
+            raise
+    return []
+
+
+async def _safe_remove_file(file_path: str) -> bool:
+    """安全地删除文件，处理文件描述符问题"""
+    max_retries = 3
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                gc.collect()
+                await asyncio.sleep(retry_delay)
+                
+            os.remove(file_path)
+            return True
+        except OSError as e:
+            if e.errno == 24:  # Too many open files
+                logger.warning(f"[警告] 删除文件时文件描述符不足 ({attempt + 1}/{max_retries}): {file_path}")
+                _monitor_file_descriptors(f"删除文件重试{attempt + 1}")
+                
+                if attempt < max_retries - 1:
+                    retry_delay *= 2
+                    continue
+            elif e.errno == 2:  # No such file or directory
+                logger.debug(f"[删除] 文件已不存在: {file_path}")
+                return True
+            else:
+                logger.error(f"[删除错误] 删除文件失败 {file_path}: {e}")
+                return False
+    
+    logger.error(f"[删除失败] 多次重试后仍无法删除文件: {file_path}")
+    return False
+
+
 async def clear_temp_emoji() -> None:
     """清理临时表情包
     清理/data/emoji、/data/image和/data/images目录下的所有文件
@@ -308,6 +410,7 @@ async def clear_temp_emoji() -> None:
     """
 
     logger.info("[清理] 开始清理缓存...")
+    _monitor_file_descriptors("清理缓存开始")
 
     for need_clear in (
         os.path.join(BASE_DIR, "emoji"),
@@ -315,14 +418,27 @@ async def clear_temp_emoji() -> None:
         os.path.join(BASE_DIR, "images"),
     ):
         if os.path.exists(need_clear):
-            files = os.listdir(need_clear)
-            # 如果文件数超过100就全部删除
-            if len(files) > 100:
-                for filename in files:
-                    file_path = os.path.join(need_clear, filename)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                        logger.debug(f"[清理] 删除: {filename}")
+            try:
+                files = _safe_listdir(need_clear)
+                # 如果文件数超过100就全部删除
+                if len(files) > 100:
+                    logger.info(f"[清理] 目录 {need_clear} 有 {len(files)} 个文件，开始清理...")
+                    deleted_count = 0
+                    for filename in files:
+                        file_path = os.path.join(need_clear, filename)
+                        try:
+                            if os.path.isfile(file_path):
+                                success = await _safe_remove_file(file_path)
+                                if success:
+                                    deleted_count += 1
+                                    logger.debug(f"[清理] 删除: {filename}")
+                        except Exception as e:
+                            logger.warning(f"[清理警告] 删除文件失败 {filename}: {e}")
+                            continue
+                    logger.info(f"[清理完成] 目录 {need_clear} 清理了 {deleted_count} 个文件")
+            except OSError as e:
+                logger.error(f"[清理错误] 无法访问目录 {need_clear}: {e}")
+                continue
 
 
 async def clean_unused_emojis(emoji_dir: str, emoji_objects: List["MaiEmoji"], removed_count: int) -> int:
@@ -337,7 +453,13 @@ async def clean_unused_emojis(emoji_dir: str, emoji_objects: List["MaiEmoji"], r
         tracked_full_paths = {emoji.full_path for emoji in emoji_objects if not emoji.is_deleted}
 
         # 遍历指定目录中的所有文件
-        for file_name in os.listdir(emoji_dir):
+        try:
+            file_list = _safe_listdir(emoji_dir)
+        except OSError as e:
+            logger.error(f"[清理错误] 无法访问目录 {emoji_dir}: {e}")
+            return removed_count
+            
+        for file_name in file_list:
             file_full_path = os.path.join(emoji_dir, file_name)
 
             # 确保处理的是文件而不是子目录
@@ -346,12 +468,12 @@ async def clean_unused_emojis(emoji_dir: str, emoji_objects: List["MaiEmoji"], r
 
             # 如果文件不在被追踪的集合中，则删除
             if file_full_path not in tracked_full_paths:
-                try:
-                    os.remove(file_full_path)
+                success = await _safe_remove_file(file_full_path)
+                if success:
                     logger.info(f"[清理] 删除未追踪的表情包文件: {file_full_path}")
                     cleaned_count += 1
-                except Exception as e:
-                    logger.error(f"[错误] 删除文件时出错 ({file_full_path}): {str(e)}")
+                else:
+                    logger.error(f"[错误] 删除文件失败: {file_full_path}")
 
         if cleaned_count > 0:
             logger.info(f"[清理] 在目录 {emoji_dir} 中清理了 {cleaned_count} 个破损表情包。")
@@ -590,6 +712,9 @@ class EmojiManager:
         """定期检查表情包完整性和数量"""
         await self.get_all_emoji_from_db()
         while True:
+            # 监控文件描述符使用情况
+            _monitor_file_descriptors("定期检查开始")
+            
             # logger.info("[扫描] 开始检查表情包完整性...")
             await self.check_emoji_file_integrity()
             await clear_temp_emoji()
@@ -604,7 +729,12 @@ class EmojiManager:
                 continue
 
             # 检查目录是否为空
-            files = os.listdir(EMOJI_DIR)
+            try:
+                files = _safe_listdir(EMOJI_DIR)
+            except OSError as e:
+                logger.error(f"[扫描错误] 无法访问表情包目录 {EMOJI_DIR}: {e}")
+                await asyncio.sleep(global_config.emoji.check_interval * 60)
+                continue
             if not files:
                 logger.warning(f"[警告] 表情包目录为空: {EMOJI_DIR}")
                 await asyncio.sleep(global_config.emoji.check_interval * 60)
@@ -634,8 +764,11 @@ class EmojiManager:
 
                         # 注册失败则删除对应文件
                         file_path = os.path.join(EMOJI_DIR, filename)
-                        os.remove(file_path)
-                        logger.warning(f"[清理] 删除注册失败的表情包文件: {filename}")
+                        success = await _safe_remove_file(file_path)
+                        if success:
+                            logger.warning(f"[清理] 删除注册失败的表情包文件: {filename}")
+                        else:
+                            logger.error(f"[清理失败] 无法删除注册失败的文件: {filename}")
                 except Exception as e:
                     logger.error(f"[错误] 扫描表情包目录失败: {str(e)}")
 
@@ -917,7 +1050,14 @@ class EmojiManager:
                 image_base64 = image_base64.encode("ascii", errors="ignore").decode("ascii")
             image_bytes = base64.b64decode(image_base64)
             image_hash = hashlib.md5(image_bytes).hexdigest()
-            image_format = Image.open(io.BytesIO(image_bytes)).format.lower()  # type: ignore
+            
+            # 安全地获取图片格式，确保资源正确释放
+            image_io = io.BytesIO(image_bytes)
+            try:
+                with Image.open(image_io) as img:
+                    image_format = img.format.lower()  # type: ignore
+            finally:
+                image_io.close()
 
             # 尝试从 EmojiDescriptionCache 表获取已有的详细描述
             existing_description = None
@@ -1060,11 +1200,11 @@ class EmojiManager:
             if await self.get_emoji_from_manager(new_emoji.hash):
                 logger.warning(f"[注册跳过] 表情包已存在 (Hash: {new_emoji.hash}): {filename}")
                 # 删除重复的源文件
-                try:
-                    os.remove(file_full_path)
+                success = await _safe_remove_file(file_full_path)
+                if success:
                     logger.info(f"[清理] 删除重复的待注册文件: {filename}")
-                except Exception as e:
-                    logger.error(f"[错误] 删除重复文件失败: {str(e)}")
+                else:
+                    logger.error(f"[错误] 删除重复文件失败: {filename}")
                 return False  # 返回 False 表示未注册新表情
 
             # 3. 构建描述和情感
@@ -1077,22 +1217,22 @@ class EmojiManager:
                 if not description:  # 检查描述是否成功生成或审核通过
                     logger.warning(f"[注册失败] 未能生成有效描述或审核未通过: {filename}")
                     # 删除未能生成描述的文件
-                    try:
-                        os.remove(file_full_path)
+                    success = await _safe_remove_file(file_full_path)
+                    if success:
                         logger.info(f"[清理] 删除描述生成失败的文件: {filename}")
-                    except Exception as e:
-                        logger.error(f"[错误] 删除描述生成失败文件时出错: {str(e)}")
+                    else:
+                        logger.error(f"[错误] 删除描述生成失败文件时出错: {filename}")
                     return False
                 new_emoji.description = description
                 new_emoji.emotion = emotions
             except Exception as build_desc_error:
                 logger.error(f"[注册失败] 生成描述/情感时出错 ({filename}): {build_desc_error}")
                 # 同样考虑删除文件
-                try:
-                    os.remove(file_full_path)
+                success = await _safe_remove_file(file_full_path)
+                if success:
                     logger.info(f"[清理] 删除描述生成异常的文件: {filename}")
-                except Exception as e:
-                    logger.error(f"[错误] 删除描述生成异常文件时出错: {str(e)}")
+                else:
+                    logger.error(f"[错误] 删除描述生成异常文件时出错: {filename}")
                 return False
 
             # 4. 检查容量并决定是否替换或直接注册
@@ -1102,11 +1242,11 @@ class EmojiManager:
                 if not replaced:
                     logger.error("[注册失败] 替换表情包失败，无法完成注册")
                     # 替换失败，删除新表情包文件
-                    try:
-                        os.remove(file_full_path)  # new_emoji 的 full_path 此时还是源路径
+                    success = await _safe_remove_file(file_full_path)  # new_emoji 的 full_path 此时还是源路径
+                    if success:
                         logger.info(f"[清理] 删除替换失败的新表情文件: {filename}")
-                    except Exception as e:
-                        logger.error(f"[错误] 删除替换失败文件时出错: {str(e)}")
+                    else:
+                        logger.error(f"[错误] 删除替换失败文件时出错: {filename}")
                     return False
                 # 替换成功时，replace_a_emoji 内部已处理 new_emoji 的注册和添加到列表
                 return True
@@ -1124,11 +1264,11 @@ class EmojiManager:
                     # register_to_db 失败时，内部会尝试清理移动后的文件，源文件可能还在
                     # 是否需要删除源文件？
                     if os.path.exists(file_full_path):
-                        try:
-                            os.remove(file_full_path)
+                        success = await _safe_remove_file(file_full_path)
+                        if success:
                             logger.info(f"[清理] 删除注册失败的源文件: {filename}")
-                        except Exception as e:
-                            logger.error(f"[错误] 删除注册失败源文件时出错: {str(e)}")
+                        else:
+                            logger.error(f"[错误] 删除注册失败源文件时出错: {filename}")
                     return False
 
         except Exception as e:
@@ -1136,11 +1276,11 @@ class EmojiManager:
             logger.error(traceback.format_exc())
             # 尝试删除源文件以避免循环处理
             if os.path.exists(file_full_path):
-                try:
-                    os.remove(file_full_path)
+                success = await _safe_remove_file(file_full_path)
+                if success:
                     logger.info(f"[清理] 删除处理异常的源文件: {filename}")
-                except Exception as remove_error:
-                    logger.error(f"[错误] 删除异常处理文件时出错: {remove_error}")
+                else:
+                    logger.error(f"[错误] 删除异常处理文件时出错: {filename}")
             return False
 
 
