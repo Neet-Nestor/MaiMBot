@@ -288,6 +288,58 @@ class LLMRequest:
                 available_models,
                 key=lambda k: available_models[k][0] + available_models[k][1] * 300 + available_models[k][2] * 1000,
             )
+        elif strategy == "first_priority" or strategy == "first":
+            # 优先使用第一个模型的策略：按model_list顺序选择第一个可用模型
+            model_list = self.model_for_task.model_list
+            selected_model_name = None
+            for model_name in model_list:
+                if model_name in available_models:
+                    selected_model_name = model_name
+                    break
+            
+            # 如果没有找到可用模型（理论上不应该发生，因为available_models已经过滤过了）
+            if selected_model_name is None:
+                selected_model_name = list(available_models.keys())[0]
+        elif strategy == "weighted_random" or strategy == "weighted":
+            # 加权随机选择策略：支持自定义权重或默认第一个模型权重更高
+            model_list = self.model_for_task.model_list
+            available_model_list = [model for model in model_list if model in available_models]
+            
+            if not available_model_list:
+                # 如果model_list中没有可用模型，从available_models中选择
+                available_model_list = list(available_models.keys())
+            
+            if len(available_model_list) == 1:
+                selected_model_name = available_model_list[0]
+            else:
+                # 获取权重配置
+                configured_weights = getattr(self.model_for_task, 'model_weights', None)
+                
+                if configured_weights and len(configured_weights) >= len(available_model_list):
+                    # 使用配置的权重（只取对应可用模型数量的权重）
+                    weights = configured_weights[:len(available_model_list)]
+                    # 确保权重总和为1
+                    total_weight = sum(weights)
+                    if total_weight > 0:
+                        weights = [w / total_weight for w in weights]
+                    else:
+                        # 如果权重总和为0，使用默认权重
+                        weights = None
+                else:
+                    weights = None
+                
+                if weights is None:
+                    # 使用默认权重：第一个模型75%，其余模型平分25%
+                    weights = []
+                    for i in range(len(available_model_list)):
+                        if i == 0:
+                            weights.append(0.75)  # 第一个模型75%权重
+                        else:
+                            # 其余模型平分剩余的25%权重
+                            weights.append(0.25 / (len(available_model_list) - 1))
+                
+                # 使用权重进行随机选择
+                selected_model_name = random.choices(available_model_list, weights=weights, k=1)[0]
         else:
             # 默认使用负载均衡策略
             logger.warning(f"未知的选择策略 '{strategy}'，使用默认的负载均衡策略")

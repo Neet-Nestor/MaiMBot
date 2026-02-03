@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional, List
 
 from .config_base import ConfigBase
 
@@ -99,6 +100,9 @@ class TaskConfig(ConfigBase):
 
     selection_strategy: str = field(default="balance")
     """模型选择策略：balance（负载均衡）或 random（随机选择）"""
+
+    model_weights: Optional[List[float]] = field(default=None)
+    """模型权重列表，用于weighted_random策略。如果未指定，默认第一个模型75%，其余平分25%"""
 
 
 @dataclass

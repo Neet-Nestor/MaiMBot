@@ -13,8 +13,8 @@ def init_replyer_private_prompt():
     {reply_target_block}。
     {planner_reasoning}
     {identity}
-    {chat_prompt}你正在和{sender_name}聊天,现在请你读读之前的聊天记录，然后给出日常且口语化的回复，平淡一些，
-    尽量简短一些。{keywords_reaction_prompt}请注意把握聊天内容，不要回复的太有条理。
+    {chat_prompt}你正在和{sender_name}聊天,现在请你关注当前正在讨论的话题，给出日常且口语化的回复，平淡一些，
+    尽量简短一些。{keywords_reaction_prompt}请注意把握聊天内容，不要回复的太有条理。避免重复之前已经讨论过的话题。重要：说话要像正常人一样自然，不要使用奇怪的口癖。
     {reply_style}
     请注意不要输出多余内容(包括前后缀，冒号和引号，括号，表情等)，只输出回复内容。
     {moderation_prompt}不要输出多余内容(包括前后缀，冒号和引号，括号，表情包，at或 @等 )。""",
