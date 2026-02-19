@@ -494,6 +494,8 @@ def _convert_messages(messages: List[Message]) -> List[ChatCompletionMessagePara
             }
             if message.tool_calls:
                 assistant_payload["tool_calls"] = _convert_assistant_tool_calls(message.tool_calls)
+            # 为助手消息添加 reasoning_content 字段（DeepSeek Reasoner 等推理模型需要，缺失会报错）
+            assistant_payload["reasoning_content"] = message.reasoning_content or ""  # type: ignore[typeddict-unknown-key]
             converted_messages.append(assistant_payload)
             continue
 
