@@ -82,6 +82,16 @@ def _convert_messages(messages: list[Message]) -> list[ChatCompletionMessagePara
             "role": message.role.value,
             "content": content,
         }
+        
+        # 为助手消息添加 reasoning_content 字段（如果存在）
+        # 这对于 DeepSeek Reasoner 等推理模型是必需的
+        if message.role == RoleType.Assistant:
+            if hasattr(message, "reasoning_content") and message.reasoning_content:
+                ret["reasoning_content"] = message.reasoning_content
+            else:
+                # 为 DeepSeek Reasoner 提供默认的空 reasoning_content
+                # 这样可以避免 "Missing reasoning_content field" 错误
+                ret["reasoning_content"] = ""
 
         if message.role == RoleType.Assistant and getattr(message, "tool_calls", None):
             tool_calls_payload: list[dict[str, Any]] = []

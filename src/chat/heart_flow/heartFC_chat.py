@@ -111,6 +111,10 @@ class HeartFChatting:
         # 跟踪连续 no_reply 次数，用于动态调整阈值
         self.consecutive_no_reply_count = 0
 
+        # 追踪最近回复的用户和时间，避免过度回复同一用户
+        self.last_reply_to_user: Dict[str, float] = {}  # user_id -> timestamp
+        self.last_processed_message_time = 0.0  # 上次处理消息的时间戳
+
         # 聊天内容概括器
         self.chat_history_summarizer = ChatHistorySummarizer(chat_id=self.stream_id)
 
@@ -181,6 +185,71 @@ class HeartFChatting:
             + (f"详情: {'; '.join(timer_strings)}" if timer_strings else "")
         )
 
+    def _should_group_with_recent_messages(self, messages: List, current_time: float) -> bool:
+        """
+        判断新消息是否应该与最近的消息分组处理
+
+        规则：
+        1. 如果消息来自同一用户，且间隔小于15秒，认为是连续消息
+        2. 如果是不同用户但在10秒内快速对话，也认为是同一话题
+        3. 如果距离上次处理消息超过30秒，认为是新话题
+
+        Returns:
+            True: 应该等待更多消息，暂不处理
+            False: 可以处理这批消息
+        """
+        if not messages:
+            return False
+
+        # 检查最新消息的时间戳
+        latest_message = messages[-1]
+        latest_time = latest_message.timestamp
+
+        # 如果距离上次处理消息太久（30秒），认为是新话题，可以处理
+        if self.last_processed_message_time > 0 and (latest_time - self.last_processed_message_time) > 30:
+            return False
+
+        # 检查消息是否来自同一用户
+        if len(messages) >= 2:
+            time_gaps = []
+            for i in range(len(messages) - 1):
+                time_gap = messages[i + 1].timestamp - messages[i].timestamp
+                time_gaps.append(time_gap)
+
+            # 如果最近两条消息间隔小于15秒，可能还有后续消息
+            if time_gaps and time_gaps[-1] < 15:
+                # 检查当前时间距离最新消息的时间
+                time_since_latest = current_time - latest_time
+                # 如果最新消息刚发送（<5秒），等待可能的后续消息
+                if time_since_latest < 5:
+                    return True
+
+        return False
+
+    def _check_reply_cooldown(self, user_id: str, current_time: float, cooldown_seconds: float = 60) -> bool:
+        """
+        检查是否在冷却时间内（避免频繁回复同一用户）
+
+        Args:
+            user_id: 用户ID
+            current_time: 当前时间戳
+            cooldown_seconds: 冷却时间（秒），默认60秒
+
+        Returns:
+            True: 在冷却期内，不应回复
+            False: 可以回复
+        """
+        if user_id not in self.last_reply_to_user:
+            return False
+
+        time_since_last_reply = current_time - self.last_reply_to_user[user_id]
+        return time_since_last_reply < cooldown_seconds
+
+    def _update_reply_tracking(self, user_id: str, current_time: float):
+        """更新回复跟踪信息"""
+        self.last_reply_to_user[user_id] = current_time
+        self.last_processed_message_time = current_time
+
     async def _loopbody(self):
         recent_messages_list = message_api.get_messages_by_time_in_chat(
             chat_id=self.stream_id,
@@ -205,10 +274,15 @@ class HeartFChatting:
             threshold = 1
 
         if len(recent_messages_list) >= threshold:
-            # for message in recent_messages_list:
-            # print(message.processed_plain_text)
+            current_time = time.time()
 
-            self.last_read_time = time.time()
+            # 检查是否应该等待更多消息（消息分组逻辑）
+            if self._should_group_with_recent_messages(recent_messages_list, current_time):
+                logger.debug(f"{self.log_prefix} 检测到连续消息，等待后续消息...")
+                await asyncio.sleep(3)  # 等待3秒看是否有更多消息
+                return True
+
+            self.last_read_time = current_time
 
             # !此处使at或者提及必定回复
             mentioned_message = None
@@ -216,19 +290,32 @@ class HeartFChatting:
                 if (message.is_mentioned or message.is_at) and global_config.chat.mentioned_bot_reply:
                     mentioned_message = message
 
+            # 获取最新消息的发送者
+            latest_user_id = recent_messages_list[-1].user_info.user_id if recent_messages_list else None
+
             # logger.info(f"{self.log_prefix} 当前talk_value: {global_config.chat.get_talk_value(self.stream_id)}")
 
             # *控制频率用
             if mentioned_message:
+                # @提及时必定回复，忽略冷却时间
                 await self._observe(recent_messages_list=recent_messages_list, force_reply_message=mentioned_message)
+                if latest_user_id:
+                    self._update_reply_tracking(latest_user_id, current_time)
+            elif latest_user_id and self._check_reply_cooldown(latest_user_id, current_time, cooldown_seconds=45):
+                # 在冷却时间内，跳过回复（小群设置45秒冷却，避免过度回复同一用户）
+                logger.debug(f"{self.log_prefix} 用户 {latest_user_id} 在冷却期内，跳过回复")
+                await asyncio.sleep(10)
+                return True
             elif (
                 random.random()
                 < global_config.chat.get_talk_value(self.stream_id)
                 * frequency_control_manager.get_or_create_frequency_control(self.stream_id).get_talk_frequency_adjust()
             ):
                 await self._observe(recent_messages_list=recent_messages_list)
+                if latest_user_id:
+                    self._update_reply_tracking(latest_user_id, current_time)
             else:
-                # 没有提到，继续保持沉默，等待5秒防止频繁触发
+                # 没有提到，继续保持沉默，等待10秒防止频繁触发
                 await asyncio.sleep(10)
                 return True
         else:

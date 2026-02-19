@@ -24,6 +24,7 @@ class Message:
         content: str | list[tuple[str, str] | str],
         tool_call_id: str | None = None,
         tool_calls: Optional[List[ToolCall]] = None,
+        reasoning_content: str | None = None,
     ):
         """
         初始化消息对象
@@ -33,6 +34,7 @@ class Message:
         self.content: str | list[tuple[str, str] | str] = content
         self.tool_call_id: str | None = tool_call_id
         self.tool_calls: Optional[List[ToolCall]] = tool_calls
+        self.reasoning_content: str | None = reasoning_content
 
     def __str__(self) -> str:
         return (
@@ -47,6 +49,7 @@ class MessageBuilder:
         self.__content: list[tuple[str, str] | str] = []
         self.__tool_call_id: str | None = None
         self.__tool_calls: Optional[List[ToolCall]] = None
+        self.__reasoning_content: str | None = None
 
     def set_role(self, role: RoleType = RoleType.User) -> "MessageBuilder":
         """
@@ -111,6 +114,15 @@ class MessageBuilder:
         self.__tool_calls = tool_calls
         return self
 
+    def set_reasoning_content(self, reasoning_content: str | None) -> "MessageBuilder":
+        """
+        设置推理内容（主要用于DeepSeek Reasoner等推理模型）
+        :param reasoning_content: 推理内容
+        :return: MessageBuilder对象
+        """
+        self.__reasoning_content = reasoning_content
+        return self
+
     def build(self) -> Message:
         """
         构建消息对象
@@ -130,4 +142,5 @@ class MessageBuilder:
             ),
             tool_call_id=self.__tool_call_id,
             tool_calls=self.__tool_calls,
+            reasoning_content=self.__reasoning_content,
         )
