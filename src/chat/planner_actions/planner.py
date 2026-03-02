@@ -384,6 +384,38 @@ class ActionPlanner:
             loop_start_time=loop_start_time,
         )
 
+        # 过滤过时的 reply action：如果目标消息后已有超过 N 条新消息，说明话题已转移
+        _STALE_THRESHOLD = 5
+        _id_to_pos = {msg.message_id: i for i, (_, msg) in enumerate(message_id_list)}
+        filtered_for_stale = []
+        for _action in actions:
+            if _action.action_type == "reply" and _action.action_message:
+                _pos = _id_to_pos.get(_action.action_message.message_id)
+                if _pos is not None:
+                    _messages_after = len(message_id_list) - 1 - _pos
+                    if _messages_after > _STALE_THRESHOLD:
+                        _preview = (_action.action_message.processed_plain_text or "")[:30]
+                        logger.info(
+                            f"{self.log_prefix}目标消息已过时（其后有{_messages_after}条新消息），跳过回复：{_preview!r}"
+                        )
+                        continue
+            filtered_for_stale.append(_action)
+        # 若所有 reply 都被过滤掉且没有 no_reply，补一个 no_reply
+        if filtered_for_stale and not any(a.action_type == "reply" for a in filtered_for_stale):
+            if not any(a.action_type == "no_reply" for a in filtered_for_stale):
+                filtered_for_stale.append(
+                    ActionPlannerInfo(
+                        action_type="no_reply",
+                        reasoning="话题已转移，不回复旧消息",
+                        action_data={},
+                        action_message=None,
+                        available_actions=dict(current_available_actions),
+                        action_reasoning=None,
+                    )
+                )
+        if len(filtered_for_stale) != len(actions):
+            actions = filtered_for_stale
+
         # 如果有强制回复消息，确保回复该消息
         if force_reply_message:
             # 检查是否已经有回复该消息的 action

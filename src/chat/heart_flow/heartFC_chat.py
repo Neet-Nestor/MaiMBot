@@ -203,7 +203,7 @@ class HeartFChatting:
 
         # 检查最新消息的时间戳
         latest_message = messages[-1]
-        latest_time = latest_message.timestamp
+        latest_time = latest_message.time
 
         # 如果距离上次处理消息太久（30秒），认为是新话题，可以处理
         if self.last_processed_message_time > 0 and (latest_time - self.last_processed_message_time) > 30:
@@ -213,7 +213,7 @@ class HeartFChatting:
         if len(messages) >= 2:
             time_gaps = []
             for i in range(len(messages) - 1):
-                time_gap = messages[i + 1].timestamp - messages[i].timestamp
+                time_gap = messages[i + 1].time - messages[i].time
                 time_gaps.append(time_gap)
 
             # 如果最近两条消息间隔小于15秒，可能还有后续消息
